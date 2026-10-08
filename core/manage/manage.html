@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepSeek 项目工作台 · 管理记忆</title><link rel="stylesheet" href="../ui.css"></head>
+<body><div class="memory-app"><aside><header><h1>管理记忆</h1><a href="../options/options.html">设置</a></header><p id="accountInfo" class="muted"></p><div id="scopes"></div><p id="sourceInfo" class="hint"></p></aside>
+<main><header><div><h2 id="scopeTitle">个人记忆</h2><p id="scopeHint"></p></div><div class="actions"><button id="refresh">刷新</button><button id="distill" hidden>立即整理待更新轮次</button><button id="export">导出</button><button id="import">导入</button><button id="add" class="primary">＋ 新增</button></div></header>
+<div id="notice" role="status"></div><div id="memories"></div></main></div>
+<dialog id="memoryEditor" class="memory-editor" aria-labelledby="memoryEditorTitle"><form id="memoryForm">
+<h2 id="memoryEditorTitle">新增记忆</h2>
+<label for="memoryKind">类别</label><select id="memoryKind" required></select>
+<label for="memoryContent">内容</label><textarea id="memoryContent" rows="6" maxlength="3000" required></textarea>
+<div class="actions"><button type="button" id="cancelEdit">取消</button><button type="submit" class="primary">保存</button></div>
+</form></dialog>
+<input type="file" id="file" accept="application/json,.json" hidden><script src="manage.js"></script></body></html>

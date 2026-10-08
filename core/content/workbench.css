@@ -1,0 +1,42 @@
+#dtw-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+.dtw-owned { --dtw-text: #eceff4; --dtw-muted: #a4aab4; --dtw-line: rgba(255,255,255,.12); --dtw-hover: rgba(255,255,255,.08); --dtw-accent: #79a9ff; color: var(--dtw-text); font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+body:not(.dark) .dtw-owned { --dtw-text: #272b34; --dtw-muted: #656e7b; --dtw-line: rgba(0,0,0,.11); --dtw-hover: rgba(0,0,0,.06); --dtw-accent: #346de0; }
+.dtw-owned * { box-sizing: border-box; }
+.dtw-owned button { color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer; }
+.dtw-tree { padding: 5px 8px 10px; }
+.dtw-loading { padding: 10px 6px; color: var(--dtw-muted); }
+.dtw-tools,.dtw-group-head,.dtw-session { display: flex; align-items: center; min-height: 30px; gap: 3px; }
+.dtw-tools { padding: 3px 4px 8px; border-bottom: 1px solid var(--dtw-line); margin-bottom: 7px; }
+.dtw-tools strong { flex: 1; font-size: 13px; }
+.dtw-tools button { width: 26px; height: 26px; border-radius: 7px; font-size: 18px; }
+.dtw-tools button:hover,.dtw-group-head button:hover,.dtw-session button:hover { background: var(--dtw-hover); }
+.dtw-group { margin: 3px 0 5px; }
+.dtw-group-head > button:first-child { width: 23px; height: 26px; border-radius: 6px; color: var(--dtw-muted); }
+.dtw-group-name { flex: 1; min-width: 0; height: 29px; text-align: left; padding: 3px 5px; border-radius: 7px; font-weight: 600 !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtw-group-name small { font-weight: 400; color: var(--dtw-muted); margin-left: 5px; }
+.dtw-group-items { margin-left: 22px; }
+.dtw-session { border-radius: 7px; color: var(--dtw-muted); }
+.dtw-session.active { color: var(--dtw-accent); background: var(--dtw-hover); }
+.dtw-session > button:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 5px 6px; border-radius: 7px; }
+.dtw-session > .dtw-session-menu { width: 24px; height: 26px; opacity: .5; border-radius: 6px; }
+.dtw-session:hover > .dtw-session-menu { opacity: 1; }
+.dtw-suggestion { margin: 6px 0; padding: 9px; border: 1px solid var(--dtw-line); border-radius: 9px; color: var(--dtw-text); }
+.dtw-suggestion > div { display: flex; gap: 5px; margin-top: 6px; }
+.dtw-suggestion button { color: var(--dtw-accent); padding: 3px 5px; }
+.dtw-memory-button { pointer-events: auto; white-space: nowrap; }
+.dtw-memory-button.dtw-native-state-fallback.is-on { color: #4d6bfe !important; background: rgba(77,107,254,.11) !important; }
+body.dark .dtw-memory-button.dtw-native-state-fallback.is-on { color: #91a6ff !important; background: rgba(115,140,255,.16) !important; }
+.dtw-memory-button.dtw-native-state-fallback:not(.is-on) { color: inherit !important; background: transparent !important; box-shadow: none !important; }
+.dtw-memory-button.dtw-native-state-fallback:not(.is-on) svg { color: inherit !important; }
+.dtw-message-meta { margin-top: 6px; color: var(--dtw-muted); font-size: 11px; }
+.dtw-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); max-width: min(600px,90vw); padding: 9px 14px; border-radius: 9px; color: #fff; background: #20242b; box-shadow: 0 9px 30px rgba(0,0,0,.25); pointer-events: auto; }
+.dtw-toast[hidden] { display: none; }
+.dtw-modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.28); pointer-events: auto; }
+.dtw-dialog { width: min(360px,90vw); padding: 12px; border-radius: 14px; background: #24272c; color: #f4f5f8; box-shadow: 0 15px 50px rgba(0,0,0,.35); }
+body:not(.dark) .dtw-dialog { background: #fff; color: #222; }
+.dtw-dialog header { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 9px; border-bottom: 1px solid rgba(128,128,128,.2); }
+.dtw-dialog button { color: inherit; background: transparent; border: 0; cursor: pointer; }
+.dtw-dialog header button { font-size: 20px; }
+.dtw-picker-list { display: grid; gap: 4px; max-height: 50vh; overflow: auto; padding-top: 8px; }
+.dtw-picker-list button { text-align: left; padding: 8px 10px; border-radius: 8px; }
+.dtw-picker-list button:hover { background: rgba(128,128,128,.15); }

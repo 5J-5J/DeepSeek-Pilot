@@ -86,6 +86,30 @@
     return { requestId, operation, marker, prompt, expiresAt };
   }
 
+  const LEADING_MEMORY_BLOCK_RE = /^[ \t]*<task_memory>[\s\S]*?<\/task_memory>[ \t]*\n*/;
+
+  function stripLeadingMemoryBlock(text) {
+    return String(text ?? "").replace(LEADING_MEMORY_BLOCK_RE, "");
+  }
+
+  function injectMemoryIntoRequest(payload, block) {
+    try {
+      const blockText = String(block ?? "").trim();
+      if (!blockText.startsWith("<task_memory>") || !blockText.endsWith("</task_memory>")) {
+        return { changed: false, reason: "invalid-block", payload };
+      }
+      if (!payload || typeof payload !== "object") return { changed: false, reason: "invalid-payload", payload };
+      const target = resolvePromptTarget(payload);
+      if (!target) return { changed: false, reason: "prompt-not-found", payload };
+      const currentText = target.get();
+      if (!currentText || typeof currentText !== "string") return { changed: false, reason: "empty-prompt", payload };
+      target.set(`${blockText}\n\n${stripLeadingMemoryBlock(currentText)}`);
+      return { changed: true, payload, target: target.kind, blockChars: blockText.length };
+    } catch {
+      return { changed: false, reason: "inject-failed", payload };
+    }
+  }
+
   function mutatePayload(payload, commandValue) {
     const command = normalizeCommand(commandValue);
     if (!payload || typeof payload !== "object") return { changed: false, reason: "invalid-payload", payload };
@@ -113,5 +137,7 @@
     resolvePromptTarget,
     normalizeCommand,
     mutatePayload,
+    stripLeadingMemoryBlock,
+    injectMemoryIntoRequest,
   });
 })();

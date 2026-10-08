@@ -1,16 +1,18 @@
 /**
- * DeepSeek 任务工作台
- * 用任务列表覆盖原生左侧栏，并提供可关闭的任务详情右侧栏。
- * 聊天、输入、附件、模型选择等全部保留原版实现。
+ * DeepSeek 项目工作台
+ * 在原生左侧栏上渲染「项目 → 会话」树，并扩展原生 ••• 菜单；
+ * 聊天、输入、附件和模型选择均保留原版。
  */
 (() => {
   "use strict";
   if (window.__dtwBootstrapped) return;
   window.__dtwBootstrapped = true;
+  console.info("[DeepSeek 项目工作台] content.js 0.8.0 已加载（项目树模式）");
 
   const STORAGE_KEY = "dtw.sidebar.v1";
   const MEMORY_KEY = "dtw.memory.v1";
-  const EMPTY_STATE = { tasks: [], conversations: {}, selectedTaskId: "" };
+  const FS_KEY = "dtw.fs.v1";
+  const EMPTY_STATE = { tasks: [], conversations: {}, selectedTaskId: "", lastSelectedTaskId: "" };
   const root = document.createElement("div");
   root.id = "dtw-root";
 
@@ -20,13 +22,13 @@
     if (!mount) return;
     const coreScript = document.createElement("script");
     coreScript.id = "dtw-request-body-core";
-    coreScript.src = chrome.runtime.getURL("request-body-core.js");
+    coreScript.src = chrome.runtime.getURL("logic/request-body-core.js");
     coreScript.async = false;
     coreScript.addEventListener("load", () => {
       if (document.getElementById("dtw-page-network")) return;
       const networkScript = document.createElement("script");
       networkScript.id = "dtw-page-network";
-      networkScript.src = chrome.runtime.getURL("page-network.js");
+      networkScript.src = chrome.runtime.getURL("page/page-network.js");
       networkScript.async = false;
       mount.appendChild(networkScript);
     }, { once: true });
@@ -37,21 +39,31 @@
 
   let state = EMPTY_STATE;
   let memoryState = DTWMemory.emptyStore();
+  let fsState = null;
   let nativeSidebar = null;
-  let nativeMode = false;
-  let openMenuId = null;
-  let openTaskMenuId = null;
-  let visibleOrder = [];
-  let searchQuery = "";
+  let nativeList = null;          // 原生会话列表内容容器（只作为工具行定位点）
+  let pendingMenuRow = null;      // 捕获阶段记录的最近点击会话行（••• 菜单归属）
+  let pendingMenuRowAt = 0;
+  let pickerId = "";              // 任务选择浮层针对的会话 id
+  let pickerAnchor = { x: 16, y: 16 };
+  let degradedMenu = false;
   let toastTimer = 0;
   let scanQueued = false;
+  let lastScanAt = 0;
+  let scanTicks = 0;
   let lastRenderKey = "";
   let memoryView = "";
   let maintenanceRequestRunning = false;
+  let summarizeInTab = false;
+  const turnWatch = { conversationId: "", count: -1, text: "", since: 0, sawGenerating: false, lastSent: "", primed: false };
 
   const esc = (value) => String(value).replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[char]);
+
+  // After the extension is reloaded, this script is orphaned and every
+  // runtime message throws "Receiving end does not exist" — fail silently.
+  const runtimeAlive = () => Boolean(globalThis.chrome?.runtime?.id);
 
   function parseNetworkDetail(event) {
     try {
@@ -110,14 +122,25 @@
 
   async function requestConversationHistory(sessionId) {
     if (!globalThis.DTWHistory?.parseHistoryResponse) throw new Error("历史消息解析器未加载");
-    const nonce = crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const requestId = `history_${nonce}`;
-    const result = waitForNetworkEvent("dtw:history-result", requestId, 15000, "DeepSeek 历史消息接口响应超时");
-    window.dispatchEvent(new CustomEvent("dtw:history-request", {
-      detail: JSON.stringify({ requestId, sessionId }),
-    }));
-    const detail = await result;
-    return DTWHistory.parseHistoryResponse(detail.data, sessionId);
+    let lastError = null;
+    // DeepSeek sometimes answers 200 with an app-level error envelope (no
+    // biz_data); a short retry clears most transient cases.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const nonce = crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const requestId = `history_${nonce}`;
+      const result = waitForNetworkEvent("dtw:history-result", requestId, 15000, "DeepSeek 历史消息接口响应超时");
+      window.dispatchEvent(new CustomEvent("dtw:history-request", {
+        detail: JSON.stringify({ requestId, sessionId }),
+      }));
+      try {
+        const detail = await result;
+        return DTWHistory.parseHistoryResponse(detail.data, sessionId);
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+    }
+    throw lastError;
   }
 
   const idFromHref = (href) => {
@@ -128,14 +151,100 @@
     }
   };
 
+  // Push the current task's memory block to the MAIN-world network hook.
+  // Bound conversation → its task; unbound or brand-new chat → selected task.
+  // Dispatched on every scan tick (cheap): the MAIN world may not have been
+  // loaded yet when the first push happened.
+  function pushMemoryContext() {
+    let block = "";
+    try {
+      if (memoryState.settings.autoInject) {
+        const conversationId = idFromHref(location.href);
+        const taskId = (conversationId ? assignedTaskId(conversationId) : "")
+          || state.selectedTaskId || state.lastSelectedTaskId;
+        const task = state.tasks.find((item) => item.id === taskId);
+        if (task) block = DTWMemory.buildTaskMemoryContext(task, memoryState);
+      }
+    } catch {
+      block = "";
+    }
+    window.dispatchEvent(new CustomEvent("dtw:memory-context", { detail: JSON.stringify({ block }) }));
+  }
+
+  // Detect a finished assistant reply: message count/text stable for 3s with no
+  // generation in flight, having seen generation happen. DeepSeek's stop button
+  // is icon-only (no accessible label), so the primary generation signal is
+  // streaming text growth between ticks; an exact +2 message jump (user message
+  // + reply landed between ticks) counts too — a lazy-loaded history batch
+  // (10+ messages) must not. The first observation after entering a
+  // conversation is a pure baseline (priming) so navigation/refresh history
+  // loading can never look like a completed turn. Fire-and-forget to the
+  // service worker, which dedups by fingerprint (refresh-safe). Skipped in the
+  // maintenance tab, whose own replies must never count as user turns.
+  function checkTurnCompleted() {
+    if (summarizeInTab || !runtimeAlive()) return;
+    const conversationId = idFromHref(location.href);
+    if (conversationId !== turnWatch.conversationId) {
+      turnWatch.conversationId = conversationId;
+      turnWatch.count = -1;
+      turnWatch.text = "";
+      turnWatch.since = Date.now();
+      turnWatch.primed = false;
+      // Keep the flag when this is the same generation whose id just
+      // materialized in the URL; drop it on a real navigation.
+      if (!isNativeGenerating()) turnWatch.sawGenerating = false;
+    }
+    if (!conversationId) return;
+    const messages = collectMessageCandidates();
+    const count = messages.length;
+    const currentText = count ? elementToText(messages[count - 1]) : "";
+    if (isNativeGenerating()) {
+      turnWatch.count = count;
+      turnWatch.text = currentText;
+      turnWatch.since = Date.now();
+      turnWatch.sawGenerating = true;
+      turnWatch.primed = true;
+      return;
+    }
+    if (count !== turnWatch.count || currentText !== turnWatch.text) {
+      if (!turnWatch.primed) {
+        turnWatch.count = count;
+        turnWatch.text = currentText;
+        turnWatch.since = Date.now();
+        turnWatch.primed = true;
+        return;
+      }
+      // ponytail: 增长即生成——纯文本流式信号，靠 1.5s 采样；一轮回复若在
+      // 单个 tick 间隙内从零完整落地且未被采样到中间态，本轮会漏计（下一轮
+      // 起正常）。需要零漏计时改用 MutationObserver 微观采样。
+      if (currentText.length > turnWatch.text.length || count - turnWatch.count === 2) {
+        turnWatch.sawGenerating = true;
+      }
+      turnWatch.count = count;
+      turnWatch.text = currentText;
+      turnWatch.since = Date.now();
+      return;
+    }
+    if (!turnWatch.sawGenerating || !currentText || Date.now() - turnWatch.since < 3000) return;
+    const fingerprint = `${count}:${simpleHash(currentText)}:${currentText.slice(0, 60)}`.slice(0, 120);
+    if (fingerprint === turnWatch.lastSent) return;
+    turnWatch.lastSent = fingerprint;
+    turnWatch.sawGenerating = false;
+    try {
+      chrome.runtime.sendMessage({ type: "dtw:turn-completed", conversationId, fingerprint }).catch(() => {});
+    } catch { /* Orphaned after an extension reload; ignore. */ }
+  }
+
   function cleanState(value) {
     if (!value || !Array.isArray(value.tasks) || typeof value.conversations !== "object") return structuredClone(EMPTY_STATE);
     const conversations = {};
     for (const [id, item] of Object.entries(value.conversations)) {
       if (id && item?.title && idFromHref(item.href) === id) conversations[id] = { id, title: String(item.title), href: String(item.href) };
     }
-    const tasks = value.tasks
+    const tasks = [...value.tasks
       .filter((task) => task?.id && task?.name && Array.isArray(task.conversationIds))
+      // 同 id 重复时后者胜（storage 污染防御），Map 保序：首个位置 + 最新值
+      .reduce((map, task) => map.set(String(task.id), task), new Map()).values()]
       .map((task) => ({
         id: String(task.id),
         name: String(task.name).slice(0, 80),
@@ -146,7 +255,9 @@
       }));
     const selectedTaskId = tasks.some((task) => task.id === value.selectedTaskId)
       ? String(value.selectedTaskId) : "";
-    return { tasks, conversations, selectedTaskId };
+    const lastSelectedTaskId = tasks.some((task) => task.id === value.lastSelectedTaskId)
+      ? String(value.lastSelectedTaskId) : "";
+    return { tasks, conversations, selectedTaskId, lastSelectedTaskId };
   }
 
   async function loadState() {
@@ -167,7 +278,7 @@
       else localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (error) {
       showToast("保存失败，请重试");
-      console.warn("[DeepSeek 任务工作台] 保存失败：", error);
+      console.warn("[DeepSeek 项目工作台] 保存失败：", error);
     }
   }
 
@@ -186,11 +297,17 @@
   async function saveMemoryState() {
     memoryState = DTWMemory.normalizeStore(memoryState);
     try {
-      if (globalThis.chrome?.storage?.local) await chrome.storage.local.set({ [MEMORY_KEY]: memoryState });
-      else localStorage.setItem(MEMORY_KEY, JSON.stringify(memoryState));
+      // 记忆写入收敛到后台（文件夹为真相源，storage 只是副本）。无 runtime
+      // 环境时退回 localStorage。
+      if (globalThis.chrome?.runtime?.sendMessage) {
+        const result = await chrome.runtime.sendMessage({ type: "dtw:write-memory", store: memoryState });
+        if (result && result.ok === false) throw new Error(result.error || "后台写入失败");
+        return;
+      }
+      localStorage.setItem(MEMORY_KEY, JSON.stringify(memoryState));
     } catch (error) {
       showToast("记忆保存失败，请重试", 3200);
-      console.warn("[DeepSeek 任务工作台] 记忆保存失败：", error);
+      console.warn("[DeepSeek 项目工作台] 记忆保存失败：", error);
     }
   }
 
@@ -228,39 +345,263 @@
     return state.tasks.find((task) => task.conversationIds.includes(conversationId))?.id || "";
   }
 
-  function orderedConversations() {
-    const ordered = visibleOrder.map((id) => state.conversations[id]).filter(Boolean);
-    const visible = new Set(visibleOrder);
-    return [...ordered, ...Object.values(state.conversations).filter((item) => !visible.has(item.id))];
+  // —— 原生侧栏增强 ——
+  // 选择器依据 recon-dom.md（2026-09-21）：会话行 a[href*="/chat/s/"]，行内唯一
+  // [role=button] 即 •••；列表内容容器 = .ds-scroll-area 的直接子 div（非虚拟化，
+  // 100 行常驻）；••• 菜单 = .ds-dropdown-menu，条目 .ds-dropdown-menu-option
+  // （--error 为删除项）；合成 Escape/空白点击关不掉菜单，需再点一次触发器。
+  // 不移动、不重建 React 管理的会话节点；只隐藏其视觉输出，在同一
+  // 滚动容器中渲染项目树，并复用原生链接与菜单事件。
+  const nextFrames = (count = 3) => new Promise((resolve) => {
+    const step = (left) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)));
+    step(count);
+  });
+
+  function findNativeListContainer() {
+    const row = document.querySelector('a[href*="/chat/s/"]');
+    if (!row || root.contains(row)) return null;
+    const scroller = row.closest(".ds-scroll-area");
+    if (!scroller) return null;
+    let element = row;
+    while (element.parentElement && element.parentElement !== scroller) element = element.parentElement;
+    return element.parentElement === scroller ? element : null;
   }
 
-  function conversationTemplate(item) {
-    const active = location.pathname.includes(`/chat/s/${item.id}`);
-    const taskId = assignedTaskId(item.id);
-    const menu = openMenuId === item.id ? moveMenuTemplate(item, taskId) : "";
+  function findNativeMoreButton(row) {
+    return row?.querySelector('[role="button"], button') || null;
+  }
+
+  function findNativeMenu() {
+    // 会话菜单特征：含 重命名/删除/分享 等条目（排除头像等其他下拉）
+    return [...document.querySelectorAll(".ds-dropdown-menu")]
+      .find((menu) => !menu.closest("#dtw-root") && menu.getBoundingClientRect().height > 0
+        && /重命名|删除|分享/.test(menu.textContent || "")) || null;
+  }
+
+  function resolveMenuConversationId() {
+    // 只信「点击时绑定」：捕获阶段记录的行 + 时间戳。菜单是浮层，退出动画时
+    // rect 会移回原点，按位置反猜曾匹配到无关会话（把别的会话移进任务）。
+    if (pendingMenuRow?.isConnected && Date.now() - pendingMenuRowAt < 4000) {
+      return idFromHref(pendingMenuRow.href);
+    }
+    return "";
+  }
+
+  function makeNativeMenuItem(proto, label, dataset) {
+    const item = proto.cloneNode(true);
+    item.classList.remove("ds-dropdown-menu-option--error");
+    item.classList.add("dtw-owned", "dtw-menu-item");
+    const labelEl = item.querySelector(".ds-dropdown-menu-option__label");
+    if (labelEl) labelEl.textContent = label;
+    else item.textContent = label;
+    for (const [key, value] of Object.entries(dataset)) item.dataset[key] = value;
+    return item;
+  }
+
+  function reconcileNativeMenu() {
+    if (degradedMenu) return;
+    const menu = findNativeMenu();
+    if (!menu || menu.querySelector(".dtw-owned")) return;
+    const conversationId = resolveMenuConversationId();
+    if (!conversationId || !state.conversations[conversationId]) return;
+    const proto = [...menu.querySelectorAll(".ds-dropdown-menu-option")]
+      .find((option) => !option.classList.contains("ds-dropdown-menu-option--error")
+        && !option.classList.contains("dtw-owned"));
+    if (!proto) { degradedMenu = true; return; }
+    const taskId = assignedTaskId(conversationId);
+    const items = [makeNativeMenuItem(proto, "移动到项目…", { action: "open-picker", id: conversationId })];
+    if (taskId) {
+      items.push(makeNativeMenuItem(proto, "移出项目", { action: "remove", id: conversationId }));
+      items.push(makeNativeMenuItem(proto, "项目详情", { action: "select-task", taskId }));
+    }
+    menu.append(...items);
+  }
+
+  async function closeNativeMenu() {
+    const menu = findNativeMenu();
+    if (!menu) return;
+    findNativeMoreButton(pendingMenuRow)?.click(); // ••• 是开关，再点一次即关闭
+    await nextFrames();
+    if (!findNativeMenu()) return;
+    const outside = document.querySelector('a[href*="/chat/s/"]') || document.body;
+    outside.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await nextFrames();
+    const remaining = findNativeMenu();
+    if (remaining) (remaining.closest(".ds-floating-container") || remaining).remove();
+  }
+
+  function openNativeConversationMenu(conversationId) {
+    const nativeLink = [...document.querySelectorAll('a[href*="/chat/s/"]')]
+      .find((link) => !root.contains(link) && idFromHref(link.href) === conversationId);
+    const more = findNativeMoreButton(nativeLink);
+    if (!nativeLink || !more) {
+      const fallback = document.querySelector(`.dtw-conversation-row[data-id="${CSS.escape(conversationId)}"]`);
+      return openTaskPicker(conversationId, fallback?.getBoundingClientRect() || { x: 16, y: 16 });
+    }
+    pendingMenuRow = nativeLink;
+    pendingMenuRowAt = Date.now();
+    more.click();
+    // DeepSeek 在路由切换后偶尔保留了菜单状态，对已隐藏行的第二次
+    // programmatic click 不再渲染浮层。优先等原生菜单，确实没出现才降级
+    // 为项目选择器，至少保证分类操作不会失效。
+    setTimeout(() => {
+      if (pendingMenuRow !== nativeLink || pickerId || findNativeMenu()) return;
+      const fallback = document.querySelector(`.dtw-conversation-row[data-id="${CSS.escape(conversationId)}"]`);
+      openTaskPicker(conversationId, fallback?.getBoundingClientRect() || { x: 16, y: 16 });
+    }, 700);
+  }
+
+  function unassignedConversations() {
+    const maintenanceIds = new Set(memoryState.maintenanceConversationIds);
+    return Object.values(state.conversations)
+      .filter((conversation) => !assignedTaskId(conversation.id) && !maintenanceIds.has(conversation.id));
+  }
+
+  function makeProjectNode(key, label, taskId = "") {
+    const isProject = Boolean(taskId);
+    const section = document.createElement("section");
+    section.className = "dtw-owned dtw-project-group";
+    section.dataset.key = key;
+    section.dataset.label = label;
+    section.innerHTML = `
+      <div class="dtw-project-head">
+        ${isProject
+          ? `<button class="dtw-project-caret" type="button" data-action="toggle-task" data-task-id="${esc(taskId)}" aria-label="展开或收起项目">⌄</button>`
+          : '<span class="dtw-project-caret is-static">⌄</span>'}
+        ${isProject
+          ? `<button class="dtw-project-main" type="button" data-action="select-task" data-task-id="${esc(taskId)}" title="打开项目详情"><strong>${esc(label)}</strong><small></small></button>`
+          : `<span class="dtw-project-main is-static"><strong>${esc(label)}</strong><small></small></span>`}
+      </div>
+      <div class="dtw-project-conversations"></div>`;
+    return section;
+  }
+
+  function conversationRowTemplate(conversation, active) {
+    return `<div class="dtw-conversation-row${active ? " is-active" : ""}" data-id="${esc(conversation.id)}">
+      <button class="dtw-conversation-main" type="button" data-action="open" data-id="${esc(conversation.id)}" title="${esc(conversation.title)}"><span>${esc(conversation.title)}</span></button>
+      <button class="dtw-conversation-more" type="button" data-action="native-menu" data-id="${esc(conversation.id)}" aria-label="会话操作">•••</button>
+    </div>`;
+  }
+
+  function reconcileNativeSidebar() {
+    const sidebar = findNativeSidebar();
+    if (!sidebar) return;
+    const list = findNativeListContainer();
+    if (!list || !list.querySelector('a[href*="/chat/s/"]')) return;
+    nativeList = list;
+    const activeId = idFromHref(location.href);
+    const groups = [
+      ...state.tasks.map((task) => ({
+        key: `p:${task.id}`,
+        label: task.name,
+        taskId: task.id,
+        collapsed: Boolean(task.collapsed),
+        items: task.conversationIds.map((id) => state.conversations[id]).filter(Boolean),
+      })),
+      { key: "unassigned", label: "未分类会话", taskId: "", collapsed: false, items: unassignedConversations() },
+    ];
+    const wanted = new Set(groups.map((group) => group.key));
+    groups.forEach((group) => {
+      let node = list.querySelector(`:scope > .dtw-project-group[data-key="${CSS.escape(group.key)}"]`);
+      if (node && node.dataset.label !== group.label) { node.remove(); node = null; }
+      if (!node) {
+        node = makeProjectNode(group.key, group.label, group.taskId);
+        list.append(node);
+      }
+      const box = node.querySelector(".dtw-project-conversations");
+      const stamp = JSON.stringify([group.items.map((item) => [item.id, item.title]), activeId]);
+      if (box.dataset.stamp !== stamp) {
+        box.dataset.stamp = stamp;
+        box.innerHTML = group.items.map((item) => conversationRowTemplate(item, item.id === activeId)).join("");
+      }
+      const count = String(group.items.length);
+      const countNode = node.querySelector(".dtw-project-main small");
+      if (countNode.textContent !== count) countNode.textContent = count;
+      node.classList.toggle("is-collapsed", group.collapsed);
+      node.classList.toggle("is-selected", group.taskId === state.selectedTaskId);
+      const shouldHide = group.key === "unassigned" && group.items.length === 0;
+      if (node.hidden !== shouldHide) node.hidden = shouldHide;
+    });
+    list.querySelectorAll(":scope > .dtw-project-group").forEach((node) => {
+      if (!wanted.has(node.dataset.key)) node.remove();
+    });
+    // React 原节点留在原位，只隐藏视觉输出；项目树使用插件自己的轻量行。
+    for (const child of list.children) {
+      if (child.classList.contains("dtw-owned")) continue;
+      if (child.style.display !== "none") child.style.display = "none";
+      if (child.dataset.dtwHide !== "1") child.dataset.dtwHide = "1";
+    }
+  }
+
+  function toolbarTemplate() {
+    const facts = memoryState.userFacts.filter((fact) => fact.status !== "disabled").length;
     return `
-      <div class="dtw-conversation-wrap" data-filter="${esc(item.title.toLowerCase())}">
-        <div class="dtw-conversation${active ? " is-active" : ""}">
-          <button class="dtw-open-conversation" type="button" data-action="open" data-id="${esc(item.id)}" title="${esc(item.title)}">
-            <span class="dtw-conversation-dot"></span><span>${esc(item.title)}</span>
-          </button>
-          <button class="dtw-more" type="button" data-action="menu" data-id="${esc(item.id)}" aria-label="管理会话">•••</button>
-        </div>
-        ${menu}
+      ${fsState?.status === "degraded" ? '<div class="dtw-fs-banner">记忆文件夹不可用，更改暂存于浏览器副本；点扩展图标重新授权。</div>' : ""}
+      <div class="dtw-side-tools">
+        <button class="is-primary" type="button" data-action="new-task">＋ 项目</button>
+        <button class="${memoryState.settings.autoClassify ? "is-on" : ""}" type="button" data-action="toggle-auto-classify" title="让 DeepSeek 自动判断新会话所属项目">${memoryState.settings.autoClassify ? "✓ " : ""}AI 归类</button>
+        <button type="button" data-action="facts-memory">记忆${facts ? ` ${facts}` : ""}</button>
+        <button class="is-icon" type="button" data-action="settings-memory" title="插件设置" aria-label="插件设置">⚙</button>
       </div>`;
   }
 
-  function moveMenuTemplate(item, currentTaskId) {
+  function reconcileToolbar() {
+    if (!nativeSidebar || !nativeSidebar.isConnected) return;
+    const stamp = JSON.stringify([
+      state.tasks.length,
+      state.selectedTaskId,
+      state.lastSelectedTaskId,
+      location.pathname,
+      memoryState.settings.autoClassify,
+      memoryState.userFacts.filter((fact) => fact.status !== "disabled").length,
+      fsState?.status,
+    ]);
+    let toolbar = nativeSidebar.querySelector(":scope .dtw-tools-root");
+    if (!toolbar) {
+      toolbar = document.createElement("div");
+      toolbar.className = "dtw-owned dtw-tools-root";
+    }
+    // 放在原生滚动列表顶部：作为唯一的插件块随历史一起滚动，不挤压聊天区，
+    // 也不会落到账号栏之后。只插入自己的节点，不移动任何原生节点。
+    if (nativeList?.isConnected && toolbar.parentElement !== nativeList) {
+      nativeList.prepend(toolbar);
+    } else if (!toolbar.isConnected) {
+      nativeSidebar.append(toolbar);
+    }
+    if (toolbar.dataset.stamp !== stamp) {
+      toolbar.dataset.stamp = stamp;
+      toolbar.innerHTML = toolbarTemplate();
+    }
+  }
+
+  function openTaskPicker(conversationId, anchor) {
+    pickerId = conversationId;
+    pickerAnchor = anchor;
+    render(true);
+  }
+
+  function closeTaskPicker() {
+    if (!pickerId) return;
+    pickerId = "";
+    render(true);
+  }
+
+  function pickerTemplate() {
+    if (!pickerId) return "";
+    const currentTaskId = assignedTaskId(pickerId);
     const taskButtons = state.tasks.map((task) => `
-      <button type="button" data-action="move" data-id="${esc(item.id)}" data-task-id="${esc(task.id)}"${task.id === currentTaskId ? " disabled" : ""}>
+      <button type="button" data-action="move" data-id="${esc(pickerId)}" data-task-id="${esc(task.id)}"${task.id === currentTaskId ? " disabled" : ""}>
         ${task.id === currentTaskId ? "✓ " : ""}${esc(task.name)}
       </button>`).join("");
+    const left = Math.min(Math.max(8, pickerAnchor.x), innerWidth - 250);
+    const top = Math.min(Math.max(8, pickerAnchor.y), innerHeight - 260);
     return `
-      <div class="dtw-move-menu">
-        <small>移动到任务</small>
-        ${taskButtons || `<button type="button" data-action="new-task" data-id="${esc(item.id)}">＋ 先新建任务</button>`}
-        ${currentTaskId ? `<button class="dtw-remove" type="button" data-action="remove" data-id="${esc(item.id)}">移出任务</button>` : ""}
-        <button class="dtw-native-manage" type="button" data-action="native-manage" data-id="${esc(item.id)}">DeepSeek 原版管理…</button>
+      <div class="dtw-picker-backdrop" data-action="close-picker"></div>
+      <div class="dtw-picker" style="left:${Math.round(left)}px;top:${Math.round(top)}px">
+        <small>移动到项目</small>
+        ${taskButtons || `<button type="button" data-action="new-task" data-id="${esc(pickerId)}">＋ 先新建项目</button>`}
+        ${currentTaskId ? `<button class="dtw-remove" type="button" data-action="remove" data-id="${esc(pickerId)}">移出项目</button>` : ""}
       </div>`;
   }
 
@@ -279,32 +620,6 @@
     return { label: "未整理", className: "" };
   }
 
-  function groupTemplate(task) {
-    const items = task.conversationIds.map((id) => state.conversations[id]).filter(Boolean);
-    return `
-      <section class="dtw-task${task.collapsed ? " is-collapsed" : ""}${state.selectedTaskId === task.id ? " is-selected" : ""}" data-task-id="${esc(task.id)}" data-filter="${esc(task.name.toLowerCase())}">
-        <div class="dtw-task-heading">
-          <button class="dtw-task-collapse" type="button" data-action="toggle-task" data-task-id="${esc(task.id)}" aria-label="${task.collapsed ? "展开" : "折叠"}任务">
-            <span class="dtw-chevron">⌄</span>
-          </button>
-          <button class="dtw-task-select" type="button" data-action="select-task" data-task-id="${esc(task.id)}" title="打开任务详情">
-            <span class="dtw-task-name">${esc(task.name)}</span><small>${items.length}</small>
-          </button>
-          <button class="dtw-task-more" type="button" data-action="task-menu" data-task-id="${esc(task.id)}" aria-label="管理任务">•••</button>
-        </div>
-        ${openTaskMenuId === task.id ? `
-          <div class="dtw-task-menu">
-            <button type="button" data-action="select-task" data-task-id="${esc(task.id)}">打开任务详情</button>
-            <button type="button" data-action="update-memory" data-task-id="${esc(task.id)}">用 DeepSeek 更新记忆</button>
-            <button type="button" data-action="rename-task" data-task-id="${esc(task.id)}">重命名任务</button>
-            <button class="dtw-delete-task" type="button" data-action="delete-task" data-task-id="${esc(task.id)}">删除任务</button>
-          </div>` : ""}
-        <div class="dtw-conversation-list">
-          ${items.length ? items.map(conversationTemplate).join("") : '<p class="dtw-empty">暂无会话</p>'}
-        </div>
-      </section>`;
-  }
-
   function itemStateLabel(item) {
     const labels = {
       active: "有效", todo: "待办", doing: "进行中", done: "已完成",
@@ -313,21 +628,12 @@
     return labels[item.state] || item.state;
   }
 
-  function progressForTask(memory) {
-    const trackable = memory.items.filter((item) =>
-      item.state !== "retired" && ["goal", "milestone"].includes(item.kind));
-    const completed = trackable.filter((item) => item.state === "done").length;
-    const percent = trackable.length ? Math.round((completed / trackable.length) * 100) : 0;
-    return { total: trackable.length, completed, percent };
-  }
-
   function inspectorItemTemplate(task, item) {
     const canAdvance = ["goal", "milestone", "blocker"].includes(item.kind);
     const advanceLabel = item.state === "done" ? "重开" : item.state === "doing" ? "完成" : item.kind === "blocker" ? "已解决" : "推进";
     return `
       <article class="dtw-inspector-item ${item.state === "retired" ? "is-retired" : ""}">
         <div class="dtw-inspector-item-top">
-          <span class="dtw-kind is-${esc(item.kind)}">${esc(item.kind)}</span>
           <em>${esc(itemStateLabel(item))}</em>${item.pinned ? '<b title="人工固定">固定</b>' : ""}
         </div>
         <p>${esc(item.text)}</p>
@@ -346,18 +652,16 @@
     const memory = DTWMemory.normalizeTaskMemory(memoryState.taskMemories[task.id]);
     const job = latestJobForTask(task.id);
     const status = memoryStatusForTask(task.id);
-    const progress = progressForTask(memory);
     const activeItems = memory.items.filter((item) => item.state !== "retired");
     const retiredItems = memory.items.filter((item) => item.state === "retired");
-    const blockers = activeItems.filter((item) => item.kind === "blocker" && item.state !== "done").length;
-    const decisions = activeItems.filter((item) => item.kind === "decision").length;
-    const constraints = activeItems.filter((item) => item.kind === "constraint").length;
+    const milestones = activeItems.filter((item) => item.kind === "milestone");
+    const completedMilestones = milestones.filter((item) => item.state === "done").length;
     const conversations = task.conversationIds.map((id) => state.conversations[id]).filter(Boolean);
     const latestConversation = conversations[0];
     const activeJob = job && ["queued", "running"].includes(job.status);
     const jobNotice = job && ["queued", "running", "failed"].includes(job.status) ? `
       <div class="dtw-inspector-job ${job.status === "failed" ? "is-error" : ""}">
-        <div><strong>${job.status === "failed" ? "整理失败" : "正在更新任务记忆"}</strong><span>${esc(job.status === "failed" ? job.error : (job.status === "queued" ? "等待前一个整理作业完成" : job.phase === "capture" ? "正在读取任务会话" : "正在等待 DeepSeek 返回"))}</span></div>
+        <div><strong>${job.status === "failed" ? "整理失败" : "正在更新项目记忆"}</strong><span>${esc(job.status === "failed" ? job.error : (job.status === "queued" ? "等待前一个整理作业完成" : job.phase === "capture" ? "正在读取项目会话" : "正在等待 DeepSeek 返回"))}</span></div>
         ${job.status === "failed" ? `<button type="button" data-action="retry-memory" data-job-id="${esc(job.id)}">重试</button>` : '<i></i>'}
       </div>` : "";
     const grouped = ["goal", "constraint", "decision", "milestone", "blocker"]
@@ -368,54 +672,49 @@
         return `<section class="dtw-inspector-group"><h4>${labels[kind]} <small>${items.length}</small></h4>${items.map((item) => inspectorItemTemplate(task, item)).join("")}</section>`;
       }).join("");
     return `
-      <aside class="dtw-inspector" aria-label="${esc(task.name)}任务详情">
+      <aside class="dtw-inspector" aria-label="${esc(task.name)}项目详情">
         <header class="dtw-inspector-header">
-          <div><small>任务详情</small><h2>${esc(task.name)}</h2></div>
-          <button type="button" data-action="close-task-panel" aria-label="关闭任务详情">×</button>
+          <div><h2>${esc(task.name)}</h2><small>${conversations.length} 个会话${milestones.length ? ` · ${completedMilestones}/${milestones.length} 里程碑` : ""}</small></div>
+          <button type="button" data-action="close-task-panel" aria-label="关闭项目详情">×</button>
         </header>
         <div class="dtw-inspector-scroll">
-          <div class="dtw-inspector-meta"><span class="dtw-memory-status ${status.className}">${esc(status.label)}</span><span>${conversations.length} 个会话</span>${memory.updatedAt ? `<time>${esc(new Date(memory.updatedAt).toLocaleString())}</time>` : ""}</div>
+          <div class="dtw-inspector-meta"><span class="dtw-memory-status ${status.className}">${esc(status.label)}</span><span>${activeItems.length} 条记忆</span>${memory.updatedAt ? `<time>更新于 ${esc(new Date(memory.updatedAt).toLocaleString())}</time>` : ""}</div>
           ${jobNotice}
           ${memory.captureIncomplete ? '<p class="dtw-capture-warning">上次只整理了页面当时可读取的消息，未加载历史未计入。</p>' : ""}
 
-          <section class="dtw-progress-card">
-            <div class="dtw-progress-heading"><div><small>当前进度</small><strong>${progress.total ? `${progress.completed} / ${progress.total}` : "待拆解"}</strong></div><b>${progress.percent}%</b></div>
-            <div class="dtw-progress-track"><i style="width:${progress.percent}%"></i></div>
-            <div class="dtw-progress-stats"><span><b>${constraints}</b>约束</span><span><b>${decisions}</b>决定</span><span class="${blockers ? "has-blocker" : ""}"><b>${blockers}</b>阻塞</span></div>
+          <section class="dtw-project-brief is-next">
+            <div><h3>下一步</h3><button type="button" data-action="edit-memory-field" data-task-id="${esc(task.id)}" data-field="nextStep">编辑</button></div>
+            <p class="${memory.nextStep ? "" : "is-empty"}">${esc(memory.nextStep || "还没有明确的下一步")}</p>
           </section>
 
-          <section class="dtw-inspector-editor">
-            <div><h3>当前概况</h3><span>${memory.summary.length}/1500</span></div>
-            <textarea data-memory-field="summary" maxlength="1500" placeholder="概括任务目标、当前状态和重要结论">${esc(memory.summary)}</textarea>
-            <button type="button" data-action="save-memory-field" data-task-id="${esc(task.id)}" data-field="summary">保存概况</button>
-          </section>
-
-          <section class="dtw-inspector-editor is-next">
-            <div><h3>下一步</h3><span>${memory.nextStep.length}/600</span></div>
-            <textarea data-memory-field="nextStep" maxlength="600" placeholder="写下下一项明确、可执行的动作">${esc(memory.nextStep)}</textarea>
-            <button type="button" data-action="save-memory-field" data-task-id="${esc(task.id)}" data-field="nextStep">保存下一步</button>
+          <section class="dtw-project-brief">
+            <div><h3>项目概况</h3><button type="button" data-action="edit-memory-field" data-task-id="${esc(task.id)}" data-field="summary">编辑</button></div>
+            <p class="${memory.summary ? "" : "is-empty"}">${esc(memory.summary || "还没有项目概况，可以手动填写或让 DeepSeek 整理。")}</p>
           </section>
 
           <section class="dtw-quick-actions">
-            <button class="is-primary" type="button" data-action="update-memory" data-task-id="${esc(task.id)}" ${activeJob ? "disabled" : ""}>↻ DeepSeek 更新</button>
-            <button type="button" data-action="add-task-item" data-task-id="${esc(task.id)}">＋ 添加记忆</button>
-            <button type="button" data-action="copy-task-context" data-task-id="${esc(task.id)}">复制上下文</button>
-            <button type="button" data-action="open-latest-task-conversation" data-task-id="${esc(task.id)}" ${latestConversation ? "" : "disabled"}>打开最近会话</button>
+            <button class="is-primary" type="button" data-action="update-memory" data-task-id="${esc(task.id)}" ${activeJob ? "disabled" : ""}>↻ 用 DeepSeek 整理</button>
+            <button type="button" data-action="add-task-item" data-task-id="${esc(task.id)}">＋ 记忆</button>
           </section>
 
-          <div class="dtw-inspector-section-title"><h3>任务记忆</h3><small>${activeItems.length} 条有效</small></div>
-          <div class="dtw-inspector-groups">${grouped || '<p class="dtw-inspector-empty">还没有结构化记忆。可人工添加，或让 DeepSeek 从任务会话中整理。</p>'}</div>
+          <div class="dtw-inspector-section-title"><h3>项目记忆</h3><small>${activeItems.length} 条有效</small></div>
+          <div class="dtw-inspector-groups">${grouped || '<p class="dtw-inspector-empty">还没有结构化记忆。可人工添加，或让 DeepSeek 从项目会话中整理。</p>'}</div>
 
-          <details class="dtw-inspector-conversations">
-            <summary>任务会话 <span>${conversations.length}</span></summary>
-            ${conversations.length ? conversations.map((conversation) => `<button type="button" data-action="open" data-id="${esc(conversation.id)}"><span>${esc(conversation.title)}</span><em>打开</em></button>`).join("") : '<p>暂无会话</p>'}
-          </details>
           ${retiredItems.length ? `<details class="dtw-retired"><summary>已退役记忆（${retiredItems.length}）</summary>${retiredItems.map((item) => inspectorItemTemplate(task, item)).join("")}</details>` : ""}
         </div>
         <footer class="dtw-inspector-footer">
-          <button type="button" data-action="facts-memory">用户事实</button>
-          ${memory.history.length ? `<button type="button" data-action="undo-task-memory" data-task-id="${esc(task.id)}">撤销更新</button>` : ""}
-          ${memory.version ? `<button type="button" data-action="rebuild-task-memory" data-task-id="${esc(task.id)}">从原文重建</button>` : ""}
+          <button type="button" data-action="rename-task" data-task-id="${esc(task.id)}">重命名</button>
+          <button type="button" data-action="open-latest-task-conversation" data-task-id="${esc(task.id)}" ${latestConversation ? "" : "disabled"}>打开最近会话</button>
+          <details class="dtw-more-actions">
+            <summary>更多</summary>
+            <div>
+              <button type="button" data-action="copy-task-context" data-task-id="${esc(task.id)}">复制项目上下文</button>
+              ${memory.history.length ? `<button type="button" data-action="undo-task-memory" data-task-id="${esc(task.id)}">撤销更新</button>` : ""}
+              ${memory.version ? `<button type="button" data-action="rebuild-task-memory" data-task-id="${esc(task.id)}">从原文重建</button>` : ""}
+              ${(memory.version || memory.summary || memory.items.length) ? `<button type="button" data-action="clear-task-memory" data-task-id="${esc(task.id)}">清空记忆</button>` : ""}
+              <button class="is-danger" type="button" data-action="delete-task" data-task-id="${esc(task.id)}">删除项目</button>
+            </div>
+          </details>
         </footer>
       </aside>`;
   }
@@ -440,7 +739,7 @@
       <div class="dtw-modal-backdrop" data-action="close-memory">
         <section class="dtw-memory-modal" role="dialog" aria-modal="true" aria-label="用户事实记忆">
           <header class="dtw-modal-header">
-            <div><small>跨任务记忆</small><h2>用户事实</h2></div>
+            <div><small>跨项目记忆</small><h2>用户事实</h2></div>
             <button type="button" data-action="close-memory" aria-label="关闭">×</button>
           </header>
           <div class="dtw-modal-body">
@@ -453,56 +752,89 @@
       </div>`;
   }
 
+  function settingsModalTemplate() {
+    const settings = memoryState.settings;
+    const fsStatus = fsState?.status || "unauthorized";
+    const fsLabel = {
+      ok: "已连接本地文件夹",
+      degraded: "授权失效，记忆暂存于浏览器副本",
+      unauthorized: "未选择文件夹（记忆只存浏览器本地）",
+    }[fsStatus];
+    const fsDetail = [
+      fsState?.lastSyncAt ? `上次同步 ${fsState.lastSyncAt.replace("T", " ").slice(0, 19)}` : "",
+      fsState?.lastError || "",
+    ].filter(Boolean).join(" · ");
+    const toggleButton = (action, on, onText = "开", offText = "关") =>
+      `<button type="button" data-action="${action}"${on ? ' class="is-on"' : ""}>${on ? `✓ ${onText}` : offText}</button>`;
+    return `
+      <div class="dtw-modal-backdrop" data-action="close-memory">
+        <section class="dtw-memory-modal" role="dialog" aria-modal="true" aria-label="插件设置">
+          <header class="dtw-modal-header">
+            <div><small>DeepSeek 项目工作台</small><h2>设置</h2></div>
+            <button type="button" data-action="close-memory" aria-label="关闭">×</button>
+          </header>
+          <div class="dtw-modal-body">
+            <div class="dtw-memory-section-title"><h3>项目管理</h3></div>
+            <div class="dtw-setting-row">
+              <div><strong>AI 自动归类</strong><small>新会话完成首轮对话后，让 DeepSeek 从现有项目中选择归属；不确定时保留未分类</small></div>
+              ${toggleButton("toggle-auto-classify", settings.autoClassify)}
+            </div>
+            <div class="dtw-memory-section-title"><h3>记忆整理</h3></div>
+            <div class="dtw-setting-row">
+              <div><strong>自动注入</strong><small>任务会话每条消息发送前注入该任务记忆</small></div>
+              ${toggleButton("toggle-auto-inject", settings.autoInject)}
+            </div>
+            <div class="dtw-setting-row">
+              <div><strong>自动整理</strong><small>任务内累计 ${settings.turnsPerOrganize} 轮对话后自动更新任务记忆</small></div>
+              <span class="dtw-turns-editor">
+                ${toggleButton("toggle-auto-analyze", settings.autoAnalyze)}
+                <input class="dtw-turns-input" type="number" min="3" max="30" step="1" value="${settings.turnsPerOrganize}" aria-label="自动整理轮数阈值">
+                <button type="button" data-action="save-turns">轮 / 保存</button>
+              </span>
+            </div>
+            <div class="dtw-setting-row">
+              <div><strong>会话原文存档</strong><small>整理时把任务会话原文写入本地记忆文件夹</small></div>
+              ${toggleButton("toggle-archive", settings.archiveConversations)}
+            </div>
+            <div class="dtw-memory-section-title"><h3>本地数据</h3></div>
+            <div class="dtw-setting-row">
+              <div><strong>记忆文件夹</strong><small>${esc(fsLabel)}${fsDetail ? ` · ${esc(fsDetail)}` : ""}</small></div>
+              <span class="dtw-setting-actions">
+                <button type="button" data-action="open-folder-page">管理文件夹</button>
+                <button type="button" data-action="reload-from-folder">重新载入</button>
+              </span>
+            </div>
+            <p class="dtw-memory-explainer">任务记忆与用户事实以 JSON 保存在本地记忆文件夹，可在其中手改后点「重新载入」生效。设置本身保存在浏览器本地。</p>
+          </div>
+          <footer class="dtw-modal-footer"><span>修改立即生效。</span><button type="button" data-action="close-memory">完成</button></footer>
+        </section>
+      </div>`;
+  }
+
   function memoryModalTemplate() {
-    return memoryView === "facts" ? factsModalTemplate() : "";
+    if (memoryView === "facts") return factsModalTemplate();
+    if (memoryView === "settings") return settingsModalTemplate();
+    return "";
+  }
+
+  function renderRoot() {
+    root.innerHTML = `
+      ${taskInspectorTemplate()}
+      ${memoryModalTemplate()}
+      ${pickerTemplate()}
+      <div class="dtw-toast" role="status"></div>`;
   }
 
   function render(force = false) {
-    const maintenanceIds = new Set(memoryState.maintenanceConversationIds);
-    const unassigned = orderedConversations().filter((item) => !assignedTaskId(item.id) && !maintenanceIds.has(item.id));
-    const renderKey = JSON.stringify([state, memoryState, visibleOrder, location.pathname, openMenuId, openTaskMenuId, nativeMode, memoryView]);
-    if (!force && renderKey === lastRenderKey) return;
-    lastRenderKey = renderKey;
-
-    root.classList.toggle("is-native-mode", nativeMode);
-    root.innerHTML = `
-      <aside class="dtw-sidebar" aria-label="DeepSeek 任务列表">
-        <header class="dtw-brand"><span class="dtw-brand-mark"></span><strong>deepseek</strong><button type="button" data-action="facts-memory">记忆 ${memoryState.userFacts.filter((fact) => fact.status !== "disabled").length}</button></header>
-        <button class="dtw-new-chat" type="button" data-action="new-chat">＋ 开启新对话</button>
-        <div class="dtw-toolbar">
-          <label class="dtw-search"><span>⌕</span><input type="search" placeholder="搜索任务或会话" value="${esc(searchQuery)}"></label>
-          <button class="dtw-add-task" type="button" data-action="new-task" title="新建任务">＋</button>
-        </div>
-        <div class="dtw-task-scroll">
-          ${state.tasks.map(groupTemplate).join("")}
-          <section class="dtw-task dtw-unassigned" data-filter="未分类">
-            <div class="dtw-task-heading is-static"><span class="dtw-chevron">⌄</span><span class="dtw-task-name">未分类会话</span><small>${unassigned.length}</small></div>
-            <div class="dtw-conversation-list">
-              ${unassigned.length ? unassigned.map(conversationTemplate).join("") : '<p class="dtw-empty">所有会话都已整理</p>'}
-            </div>
-          </section>
-        </div>
-        <button class="dtw-native-toggle" type="button" data-action="native-mode">显示 DeepSeek 原版侧栏</button>
-      </aside>
-      <button class="dtw-return-tab" type="button" data-action="task-mode">任务列表</button>
-      ${taskInspectorTemplate()}
-      ${memoryModalTemplate()}
-      <div class="dtw-toast" role="status"></div>`;
-    applyFilter();
-  }
-
-  function applyFilter() {
-    const query = searchQuery.trim().toLowerCase();
-    for (const group of root.querySelectorAll(".dtw-task")) {
-      const groupMatch = group.dataset.filter.includes(query);
-      let visibleChildren = 0;
-      for (const item of group.querySelectorAll(".dtw-conversation-wrap")) {
-        const visible = !query || groupMatch || item.dataset.filter.includes(query);
-        item.hidden = !visible;
-        if (visible) visibleChildren += 1;
-      }
-      group.hidden = Boolean(query) && !groupMatch && visibleChildren === 0;
+    // location.pathname 驱动自绘行的当前会话高亮
+    const renderKey = JSON.stringify([state, memoryState, fsState?.status, memoryView, pickerId, location.pathname]);
+    if (force || renderKey !== lastRenderKey) {
+      lastRenderKey = renderKey;
+      renderRoot();
     }
+    reconcileNativeSidebar();
+    reconcileNativeMenu();
+    reconcileToolbar();
   }
 
   function showToast(message, duration = 1600) {
@@ -514,17 +846,11 @@
     toastTimer = setTimeout(() => toast.classList.remove("is-visible"), duration);
   }
 
-  function setNativeMode(value) {
-    nativeMode = value;
-    nativeSidebar?.classList.toggle("dtw-native-sidebar-covered", !nativeMode);
-    render(true);
-  }
-
   function createTask(conversationId = "") {
-    const name = prompt("任务名称")?.trim();
+    const name = prompt("项目名称")?.trim();
     if (!name) return;
-    if (name.length > 80) return showToast("任务名称不能超过 80 个字符");
-    if (state.tasks.some((task) => task.name === name)) return showToast("同名任务已存在");
+    if (name.length > 80) return showToast("项目名称不能超过 80 个字符");
+    if (state.tasks.some((task) => task.name === name)) return showToast("同名项目已存在");
     const task = {
       id: crypto.randomUUID?.() || `task_${Date.now()}`,
       name,
@@ -535,8 +861,8 @@
     };
     state.tasks.push(task);
     state.selectedTaskId = task.id;
-    openMenuId = null;
-    openTaskMenuId = null;
+    state.lastSelectedTaskId = task.id;
+    pickerId = "";
     saveState();
     render(true);
   }
@@ -544,26 +870,24 @@
   function renameTask(taskId) {
     const task = state.tasks.find((item) => item.id === taskId);
     if (!task) return;
-    const name = prompt("重命名任务", task.name)?.trim();
+    const name = prompt("重命名项目", task.name)?.trim();
     if (!name || name === task.name) return;
-    if (name.length > 80) return showToast("任务名称不能超过 80 个字符");
-    if (state.tasks.some((item) => item.id !== taskId && item.name === name)) return showToast("同名任务已存在");
+    if (name.length > 80) return showToast("项目名称不能超过 80 个字符");
+    if (state.tasks.some((item) => item.id !== taskId && item.name === name)) return showToast("同名项目已存在");
     task.name = name;
-    openTaskMenuId = null;
     saveState();
     render(true);
   }
 
   function deleteTask(taskId) {
     const task = state.tasks.find((item) => item.id === taskId);
-    if (!task || !confirm(`删除任务“${task.name}”？\n其中的会话不会被删除，将回到未分类。`)) return;
+    if (!task || !confirm(`删除项目“${task.name}”？\n其中的会话不会被删除，将回到未分类。`)) return;
     state.tasks = state.tasks.filter((item) => item.id !== taskId);
     delete memoryState.taskMemories[taskId];
     for (const job of Object.values(memoryState.jobs)) {
       if (job.taskId === taskId && ["queued", "running"].includes(job.status)) job.status = "cancelled";
     }
     if (state.selectedTaskId === taskId) state.selectedTaskId = "";
-    openTaskMenuId = null;
     saveState();
     saveMemoryState();
     render(true);
@@ -588,6 +912,7 @@
       target.conversationIds.unshift(conversationId);
       affected.add(target.id);
       state.selectedTaskId = target.id;
+      state.lastSelectedTaskId = target.id;
     }
     for (const affectedId of affected) {
       const task = state.tasks.find((item) => item.id === affectedId);
@@ -598,19 +923,9 @@
         taskMemory.error = "任务的会话归属已变化，需要重新整理";
       }
     }
-    openMenuId = null;
-    openTaskMenuId = null;
     saveState();
     saveMemoryState();
     render(true);
-  }
-
-  function openNativeConversationMenu(conversationId) {
-    const nativeLink = [...document.querySelectorAll('a[href*="/chat/s/"]')]
-      .find((link) => !root.contains(link) && idFromHref(link.href) === conversationId);
-    openMenuId = null;
-    setNativeMode(true);
-    requestAnimationFrame(() => nativeLink?.querySelector('[role="button"], button')?.click());
   }
 
   function openConversation(conversationId) {
@@ -625,22 +940,11 @@
     else if (state.conversations[conversationId]) location.assign(state.conversations[conversationId].href);
   }
 
-  function openNewChat() {
-    const label = [...document.querySelectorAll("span")].find((element) => !root.contains(element) && element.textContent.trim() === "开启新对话");
-    let control = label;
-    for (let depth = 0; depth < 4 && control; depth += 1) {
-      if (control.matches?.("button, a, [role=button]")) return control.click();
-      control = control.parentElement;
-    }
-    location.assign("https://chat.deepseek.com/a/chat");
-  }
-
   function selectTask(taskId) {
     if (!state.tasks.some((task) => task.id === taskId)) return;
     state.selectedTaskId = taskId;
+    state.lastSelectedTaskId = taskId;
     memoryView = "";
-    openMenuId = null;
-    openTaskMenuId = null;
     saveState();
     render(true);
   }
@@ -653,8 +957,6 @@
 
   function openFactsMemory() {
     memoryView = "facts";
-    openMenuId = null;
-    openTaskMenuId = null;
     render(true);
   }
 
@@ -694,6 +996,7 @@
     const task = state.tasks.find((item) => item.id === taskId);
     if (!task) return;
     if (!globalThis.chrome?.runtime?.sendMessage) return showToast("当前环境无法启动 DeepSeek 整理会话", 3000);
+    if (!runtimeAlive()) return showToast("插件已重新加载，请刷新本页后再试", 3200);
     if (!memoryState.settings.acknowledgedCloudSummary) {
       const accepted = confirm("更新记忆会在一个非激活的 DeepSeek 标签页中发起整理请求。插件会在请求发送前直接改写请求体，把该任务当前可读取的对话原文交给 DeepSeek。记忆保存在本地，但整理过程不是离线的。是否继续？");
       if (!accepted) return;
@@ -714,23 +1017,27 @@
   }
 
   async function retryMemoryUpdate(jobId) {
-    if (!globalThis.chrome?.runtime?.sendMessage) return;
-    showToast("正在重新创建整理作业…", 2400);
-    const result = await chrome.runtime.sendMessage({ type: "dtw:retry-memory-update", jobId });
-    if (!result?.ok) showToast(result?.error || "重试失败", 4200);
+    if (!runtimeAlive()) return showToast("插件已重新加载，请刷新本页后再试", 3200);
+    try {
+      showToast("正在重新创建整理作业…", 2400);
+      const result = await chrome.runtime.sendMessage({ type: "dtw:retry-memory-update", jobId });
+      if (!result?.ok) showToast(result?.error || "重试失败", 4200);
+    } catch {
+      showToast("插件已重新加载，请刷新本页后再试", 3200);
+    }
   }
 
-  function saveMemoryField(taskId, field, button) {
+  function editMemoryField(taskId, field) {
     if (!["summary", "nextStep"].includes(field)) return;
-    const editor = button.closest(".dtw-inspector-editor");
-    const value = editor?.querySelector(`[data-memory-field="${field}"]`)?.value.trim();
-    if (value == null) return;
-    const max = field === "summary" ? 1500 : 600;
-    if (value.length > max) return showToast(`内容不能超过 ${max} 个字符`, 2600);
     const current = DTWMemory.normalizeTaskMemory(memoryState.taskMemories[taskId]);
+    const max = field === "summary" ? 1500 : 600;
+    const label = field === "summary" ? "项目概况" : "下一步";
+    const value = prompt(`编辑${label}`, current[field])?.trim();
+    if (value == null) return;
+    if (value.length > max) return showToast(`内容不能超过 ${max} 个字符`, 2600);
     if (current[field] === value) return showToast("内容没有变化");
     commitManualTaskMemory(taskId, (memory) => { memory[field] = value; });
-    showToast(field === "summary" ? "任务概况已保存" : "下一步已保存");
+    showToast(`${label}已保存`);
   }
 
   function addTaskItem(taskId) {
@@ -924,40 +1231,106 @@
     render(true);
   }
 
-  root.addEventListener("input", (event) => {
-    if (event.target.matches(".dtw-search input")) {
-      searchQuery = event.target.value;
-      applyFilter();
-      return;
-    }
-    if (event.target.matches(".dtw-inspector-editor textarea")) {
-      const counter = event.target.closest(".dtw-inspector-editor")?.querySelector("div > span");
-      if (counter) counter.textContent = `${event.target.value.length}/${event.target.maxLength}`;
-    }
-  });
+  const AUTO_SETTING_LABELS = {
+    autoClassify: "AI 自动归类",
+    autoInject: "自动注入",
+    autoAnalyze: "自动整理",
+    archiveConversations: "会话原文存档",
+  };
 
-  root.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-action]");
-    if (!button) return;
+  function toggleAutoSetting(name) {
+    if (!AUTO_SETTING_LABELS[name]) return;
+    const enabling = !memoryState.settings[name];
+    if (name === "autoClassify" && enabling && !state.tasks.length) {
+      return showToast("请先创建至少一个项目", 2600);
+    }
+    if (enabling && !memoryState.settings.acknowledgedCloudSummary) {
+      const detail = name === "autoClassify"
+        ? "开启后，新会话完成首轮对话时，插件会把会话标题与最多 12000 字符的对话原文发送给 DeepSeek，由它在现有项目中选择归属并自动移动。"
+        : name === "autoInject"
+        ? "开启后，任务会话的每条消息发送前，插件会把该任务的记忆注入 DeepSeek 请求；注入内容会保存在 DeepSeek 服务端对话历史中。"
+        : name === "autoAnalyze"
+          ? `开启后，任务内每累计 ${memoryState.settings.turnsPerOrganize} 轮对话，插件会自动在非激活标签页中发起 DeepSeek 整理请求，把任务会话原文交给 DeepSeek。`
+          : "开启后，整理任务记忆时会把任务会话原文存档写入本地记忆文件夹；原文不发送给 DeepSeek。";
+      if (!confirm(`${detail}\n记忆保存在本地，但该过程不是离线的。是否继续？`)) return;
+      memoryState.settings.acknowledgedCloudSummary = true;
+    }
+    memoryState.settings[name] = enabling;
+    saveMemoryState();
+    render(true);
+    pushMemoryContext();
+    showToast(`${AUTO_SETTING_LABELS[name]}${enabling ? "已开启" : "已关闭"}`, 2000);
+  }
+
+  function saveTurnsSetting() {
+    const input = root.querySelector(".dtw-turns-input");
+    const turns = Math.min(30, Math.max(3, Number.parseInt(input?.value, 10) || 5));
+    memoryState.settings.turnsPerOrganize = turns;
+    saveMemoryState();
+    render(true);
+    showToast(`每 ${turns} 轮自动整理`, 2000);
+  }
+
+  async function reloadFromFolder() {
+    showToast("正在从文件夹重新载入…", 2400);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "dtw:fs-reload" });
+      if (!result?.ok) throw new Error(result?.error || `当前状态不支持（${result?.status || "未知"}）`);
+      showToast(`已载入 ${result.loaded.tasks} 个任务、${result.loaded.facts} 条用户事实`, 3200);
+    } catch (error) {
+      showToast(error.message || "重新载入失败", 3600);
+    }
+  }
+
+  function clearTaskMemoryAction(taskId) {
+    if (!runtimeAlive()) return showToast("插件已重新加载，请刷新本页后再试", 3200);
+    if (!confirm("清空会删除该任务的概况、下一步和全部记忆条目（含人工条目），且不可恢复。是否继续？")) return;
+    try {
+      chrome.runtime.sendMessage({ type: "dtw:clear-task-memory", taskId })
+        .then((result) => {
+          if (!result?.ok) throw new Error(result?.error || "清空失败");
+          showToast("任务记忆已清空");
+        })
+        .catch((error) => showToast(error.message || "清空失败", 3200));
+    } catch {
+      showToast("插件已重新加载，请刷新本页后再试", 3200);
+    }
+  }
+
+  // 委托挂 document：插件 UI 分散在 #dtw-root（浮层）与原生侧栏内（.dtw-owned 注入节点）
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-action]");
+    if (!button || !button.closest("#dtw-root, .dtw-owned")) return;
     const { action, id, taskId, itemId, factId, jobId, field } = button.dataset;
     if (action === "close-memory" && button.classList.contains("dtw-modal-backdrop") && event.target !== button) return;
-    if (action === "new-chat") openNewChat();
-    else if (action === "new-task") createTask(id);
+    if (action === "new-task") createTask(id);
     else if (action === "open") openConversation(id);
-    else if (action === "menu") { openMenuId = openMenuId === id ? null : id; openTaskMenuId = null; render(true); }
-    else if (action === "task-menu") { openTaskMenuId = openTaskMenuId === taskId ? null : taskId; openMenuId = null; render(true); }
-    else if (action === "move") moveConversation(id, taskId);
-    else if (action === "remove") moveConversation(id, "");
+    else if (action === "native-menu") openNativeConversationMenu(id);
+    else if (action === "open-picker") {
+      const rect = findNativeMenu()?.getBoundingClientRect() || button.getBoundingClientRect();
+      openTaskPicker(id, { x: rect.right + 8, y: Math.max(rect.top - 6, 8) });
+      closeNativeMenu();
+    }
+    else if (action === "close-picker") closeTaskPicker();
+    else if (action === "move") { moveConversation(id, taskId); closeTaskPicker(); }
+    else if (action === "remove") { moveConversation(id, ""); closeTaskPicker(); }
     else if (action === "rename-task") renameTask(taskId);
     else if (action === "delete-task") deleteTask(taskId);
     else if (action === "toggle-task") toggleTask(taskId);
     else if (action === "select-task") selectTask(taskId);
     else if (action === "close-task-panel") closeTaskPanel();
     else if (action === "facts-memory") openFactsMemory();
+    else if (action === "settings-memory") { memoryView = "settings"; render(true); }
+    else if (action === "toggle-archive") toggleAutoSetting("archiveConversations");
+    else if (action === "save-turns") saveTurnsSetting();
+    else if (action === "open-folder-page") {
+      if (globalThis.chrome?.runtime?.getURL) window.open(chrome.runtime.getURL("popup/popup.html"), "_blank");
+    }
+    else if (action === "reload-from-folder") reloadFromFolder();
     else if (action === "close-memory") closeMemory();
     else if (action === "update-memory") startMemoryUpdate(taskId);
     else if (action === "retry-memory") retryMemoryUpdate(jobId);
-    else if (action === "save-memory-field") saveMemoryField(taskId, field, button);
+    else if (action === "edit-memory-field") editMemoryField(taskId, field);
     else if (action === "add-task-item") addTaskItem(taskId);
     else if (action === "edit-task-item") editTaskItem(taskId, itemId);
     else if (action === "pin-task-item") pinTaskItem(taskId, itemId);
@@ -967,36 +1340,33 @@
     else if (action === "open-latest-task-conversation") openLatestTaskConversation(taskId);
     else if (action === "undo-task-memory") undoTaskMemory(taskId);
     else if (action === "rebuild-task-memory") rebuildTaskMemory(taskId);
+    else if (action === "clear-task-memory") clearTaskMemoryAction(taskId);
+    else if (action === "toggle-auto-inject") toggleAutoSetting("autoInject");
+    else if (action === "toggle-auto-analyze") toggleAutoSetting("autoAnalyze");
+    else if (action === "toggle-auto-classify") toggleAutoSetting("autoClassify");
     else if (action === "add-fact") addFact();
     else if (action === "edit-fact") editFact(factId);
     else if (action === "toggle-fact") toggleFact(factId);
     else if (action === "confirm-fact") confirmFact(factId);
-    else if (action === "native-manage") openNativeConversationMenu(id);
-    else if (action === "native-mode") setNativeMode(true);
-    else if (action === "task-mode") setNativeMode(false);
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && memoryView) closeMemory();
-    else if (event.key === "Escape" && (openMenuId || openTaskMenuId)) {
-      openMenuId = null;
-      openTaskMenuId = null;
-      render(true);
-    } else if (event.key === "Escape" && state.selectedTaskId) closeTaskPanel();
+    if (event.key !== "Escape") return;
+    if (pickerId) closeTaskPicker();
+    else if (memoryView) closeMemory();
+    else if (state.selectedTaskId) closeTaskPanel();
   });
 
   async function scan() {
     scanQueued = false;
+    lastScanAt = Date.now();
+    scanTicks += 1;
+    root.dataset.scanTick = String(scanTicks); // 测试用：检测扫描循环是否收敛
     const sidebar = findNativeSidebar();
     if (!sidebar) return;
-    if (nativeSidebar && nativeSidebar !== sidebar) nativeSidebar.classList.remove("dtw-native-sidebar-covered");
     nativeSidebar = sidebar;
-    const width = Math.round(sidebar.getBoundingClientRect().width);
-    if (width) document.documentElement.style.setProperty("--dtw-sidebar-width", `${width}px`);
-    sidebar.classList.toggle("dtw-native-sidebar-covered", !nativeMode);
 
     const found = collectConversations();
-    visibleOrder = found.map((item) => item.id);
     let changed = false;
     for (const item of found) {
       const old = state.conversations[item.id];
@@ -1007,12 +1377,17 @@
     }
     if (changed) await saveState();
     render(changed);
+    pushMemoryContext();
   }
 
   function scheduleScan() {
     if (scanQueued) return;
     scanQueued = true;
-    requestAnimationFrame(scan);
+    // 分组搬运自身也触发 body MutationObserver；没有最小间隔时会以 rAF 速率自激
+    // 空转（生成期间曾把页面拖崩）。用 setTimeout 而非 rAF：窗口被遮挡时 rAF
+    // 停摆，scanQueued 会卡死，整个扫描循环就此失效（表象：记忆上下文不再推送）。
+    const wait = Math.max(0, 250 - (Date.now() - lastScanAt));
+    setTimeout(scan, wait);
   }
 
   function simpleHash(value) {
@@ -1240,20 +1615,21 @@
     throw new Error("等待 DeepSeek 整理结果超时");
   }
 
-  async function runMemorySummary(jobId, promptText) {
+  async function runStructuredMaintenance(jobId, promptText, operation, resultType, statusText) {
     let command = null;
     let applied = null;
+    summarizeInTab = true;
     try {
       const editor = await waitForNativeEditor();
       const initialAssistantCount = document.querySelectorAll("div.ds-message").length;
-      command = await armRequestBody("memory-summary", jobId, promptText);
+      command = await armRequestBody(operation, jobId, promptText);
       applied = waitForNetworkEvent("dtw:network-applied", command.requestId, 15000);
-      setNativeEditorText(editor, `${command.marker}\n任务工作台正在更新任务记忆`);
+      setNativeEditorText(editor, `${command.marker}\n${statusText}`);
       await submitNativeEditor(editor);
       await applied;
       const raw = await waitForSummaryResult(initialAssistantCount);
       await chrome.runtime.sendMessage({
-        type: "dtw:memory-summary-result",
+        type: resultType,
         jobId,
         raw,
         conversationId: idFromHref(location.href),
@@ -1261,15 +1637,26 @@
     } catch (error) {
       if (command?.requestId) cancelRequestBody(command.requestId);
       applied?.catch(() => {});
-      await chrome.runtime.sendMessage({
-        type: "dtw:memory-summary-result",
-        jobId,
-        raw: "",
-        error: error.message,
-        conversationId: idFromHref(location.href),
-      });
+      try {
+        await chrome.runtime.sendMessage({
+          type: resultType,
+          jobId,
+          raw: "",
+          error: error.message,
+          conversationId: idFromHref(location.href),
+        });
+      } catch { /* Orphaned after an extension reload; the job times out. */ }
+    } finally {
+      summarizeInTab = false;
     }
   }
+
+  const runMemorySummary = (jobId, promptText) => runStructuredMaintenance(
+    jobId, promptText, "memory-summary", "dtw:memory-summary-result", "项目工作台正在更新项目记忆",
+  );
+  const runProjectClassifier = (jobId, promptText) => runStructuredMaintenance(
+    jobId, promptText, "project-classify", "dtw:project-classify-result", "项目工作台正在判断会话归属",
+  );
 
   if (globalThis.chrome?.runtime?.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1286,8 +1673,49 @@
         }).catch((error) => sendResponse({ ok: false, error: error.message }));
         return true;
       }
+      if (message?.type === "dtw:run-project-classifier") {
+        waitForNativeEditor().then((editor) => {
+          sendResponse({ ok: Boolean(editor) });
+          runProjectClassifier(message.jobId, message.prompt);
+        }).catch((error) => sendResponse({ ok: false, error: error.message }));
+        return true;
+      }
       return false;
     });
+  }
+
+  // Auto-organize runs in a hidden tab; surface its start/finish/failure for
+  // the task the user is chatting in — otherwise the feature is invisible.
+  function notifyJobTransitions(previous, next) {
+    try {
+      const conversationId = idFromHref(location.href);
+      const taskId = (conversationId ? assignedTaskId(conversationId) : "")
+        || state.selectedTaskId || state.lastSelectedTaskId;
+      const taskName = state.tasks.find((task) => task.id === taskId)?.name || "当前任务";
+      for (const job of Object.values(next.jobs)) {
+        const was = previous.jobs[job.id]?.status || "";
+        if (job.kind === "classify" && job.conversationId === conversationId) {
+          if (["queued", "running"].includes(job.status) && !["queued", "running"].includes(was)) {
+            showToast("DeepSeek 正在判断该会话所属项目", 3200);
+          } else if (job.status === "done" && was !== "done" && was) {
+            showToast(job.resultTaskName
+              ? `已自动归类到「${job.resultTaskName}」`
+              : "未找到足够匹配的项目，已保留在未分类", 3600);
+          } else if (job.status === "failed" && was !== "failed" && was) {
+            showToast(`自动归类失败：${job.error}`, 4200);
+          }
+          continue;
+        }
+        if (job.taskId !== taskId) continue;
+        if (["queued", "running"].includes(job.status) && !["queued", "running"].includes(was)) {
+          showToast(`「${taskName}」开始整理任务记忆`, 3200);
+        } else if (job.status === "done" && was !== "done" && was) {
+          showToast(`「${taskName}」任务记忆已更新`, 3200);
+        } else if (job.status === "failed" && was !== "failed" && was) {
+          showToast(`「${taskName}」整理失败：${job.error}`, 4200);
+        }
+      }
+    } catch { /* notification only */ }
   }
 
   async function start() {
@@ -1300,7 +1728,18 @@
       return;
     }
     [state, memoryState] = await Promise.all([loadState(), loadMemoryState()]);
+    if (globalThis.chrome?.storage?.local) {
+      fsState = (await chrome.storage.local.get(FS_KEY))[FS_KEY] || null;
+    }
     document.body.appendChild(root);
+    // 捕获阶段记录 ••• 点击所在行，供原生菜单注入时解析归属会话
+    document.addEventListener("click", (event) => {
+      const row = event.target?.closest?.('a[href*="/chat/s/"]');
+      if (row && !root.contains(row)) {
+        pendingMenuRow = row;
+        pendingMenuRowAt = Date.now();
+      }
+    }, true);
     await scan();
 
     new MutationObserver((records) => {
@@ -1308,17 +1747,29 @@
     }).observe(document.body, { childList: true, subtree: true });
     addEventListener("focus", scheduleScan);
     document.addEventListener("visibilitychange", scheduleScan);
-    setInterval(scheduleScan, 1500); // ponytail: cheap sidebar rescan; replace only if profiling shows it matters.
+    // ponytail: cheap sidebar rescan; replace only if profiling shows it matters.
+    setInterval(() => {
+      scheduleScan();
+      checkTurnCompleted();
+    }, 1500);
 
     if (globalThis.chrome?.storage?.onChanged) {
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== "local") return;
         if (changes[STORAGE_KEY]) state = cleanState(changes[STORAGE_KEY].newValue);
-        if (changes[MEMORY_KEY]) memoryState = DTWMemory.normalizeStore(changes[MEMORY_KEY].newValue);
-        if (changes[STORAGE_KEY] || changes[MEMORY_KEY]) render(true);
+        if (changes[MEMORY_KEY]) {
+          const next = DTWMemory.normalizeStore(changes[MEMORY_KEY].newValue);
+          notifyJobTransitions(memoryState, next);
+          memoryState = next;
+        }
+        if (changes[FS_KEY]) fsState = changes[FS_KEY].newValue || null;
+        if (changes[STORAGE_KEY] || changes[MEMORY_KEY]) {
+          render(true);
+          pushMemoryContext();
+        }
       });
     }
   }
 
-  start().catch((error) => console.warn("[DeepSeek 任务工作台] 启动失败，保留原版页面：", error));
+  start().catch((error) => console.warn("[DeepSeek 项目工作台] 启动失败，保留原版页面：", error));
 })();
