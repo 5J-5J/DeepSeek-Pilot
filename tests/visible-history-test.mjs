@@ -3,27 +3,29 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { workbenchSource, memoryCommitFixture } from "./workbench-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tables = new Map();
-for (const name of ["sessions", "messages", "projects", "memberships", "memories", "jobs", "settings", "metrics"]) tables.set(name, new Map());
+for (const name of ["sessions", "messages", "projects", "memberships", "memories", "memoryTurns", "jobs", "settings", "metrics"]) tables.set(name, new Map());
 const db = {
   get: async (name, key) => tables.get(name).get(JSON.stringify(key)) || null,
-  all: async (name, accountId) => [...tables.get(name).values()].filter((row) => row.accountId === accountId),
+  all: async (name, accountId) => [...tables.get(name).values()].filter((row) => accountId === undefined || row.accountId === accountId),
   by: async (name, _index, [accountId, sessionId]) => [...tables.get(name).values()].filter((row) => row.accountId === accountId && row.sessionId === sessionId),
   put: async (name, row) => {
     const id = ({ sessions: row.sessionId, projects: row.projectId, memberships: row.sessionId,
-      memories: row.memoryId, jobs: row.jobId, settings: row.key, metrics: row.metricId })[name];
+      memories: row.memoryId, memoryTurns: row.turnKey, jobs: row.jobId, settings: row.key, metrics: row.metricId })[name];
     const key = name === "messages" ? [row.accountId, row.sessionId, row.messageId] : [row.accountId, id];
     tables.get(name).set(JSON.stringify(key), structuredClone(row));
   },
   remove: async (name, key) => { tables.get(name).delete(JSON.stringify(key)); },
 };
+db.commitMemoryBatch = memoryCommitFixture(db);
 let listener;
 let alarmListener;
 let automationTabs = 0;
 let optionsOpened = 0;
-const storageValues = { accountId: "account123" };
+const storageValues = { accountId: "account123", "dtw.firstRunAtMs": 1 };
 const chrome = {
   runtime: { id: "test-extension", getURL: (path = "") => `chrome-extension://test-extension/${path}`,
     onMessage: { addListener(fn) { listener = fn; } }, onInstalled: { addListener() {} },
@@ -36,18 +38,24 @@ const chrome = {
     set: async (values) => { Object.assign(storageValues, values); },
   } },
 };
-const source = await readFile(path.join(root, "core/background/workbench.js"), "utf8");
+const source = await workbenchSource();
 vm.runInNewContext(source, { DTWDB: db, chrome, importScripts() {}, crypto: globalThis.crypto, structuredClone,
-  Date, Number, String, Boolean, Array, Object, Set, Map, Promise, JSON, Math, console, setTimeout }, { filename: "workbench.js" });
+  Date, Number, String, Boolean, Array, Object, Set, Map, Promise, JSON, Math, TextEncoder, console, setTimeout }, { filename: "workbench.js" });
 const accountId = "account123";
-const request = (type, body) => new Promise((resolve) => listener({ type: `dtw:${type}`, accountId, ...body },
+const request = (type, body) => new Promise((resolve) => listener({ type: `dtw:${type}`, createdAtMs: 1, accountId, ...body },
   { tab: { url: "https://chat.deepseek.com/a/chat" } }, resolve));
-const projectDistillJobs = (snapshot) => snapshot.jobs.filter((job) => job.type === "DISTILL" && job.memoryScope !== "PERSONAL");
-const extensionRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`, accountId, ...body },
+const extensionRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`, createdAtMs: 1, accountId, ...body },
   { id: chrome.runtime.id, url: chrome.runtime.getURL("options/options.html"),
     tab: { url: chrome.runtime.getURL("options/options.html") } }, resolve));
 
 assert.equal((await extensionRequest("snapshot")).ok, true);
+const initialDisplaySettings = (await extensionRequest("snapshot")).settings;
+assert.equal(initialDisplaySettings.showPersonalMemory, false);
+assert.equal(initialDisplaySettings.showProjectMemory, false);
+assert.equal((await extensionRequest("settings-update", { key: "showPersonalMemory", value: true })).value, true);
+assert.equal((await extensionRequest("settings-update", { key: "showProjectMemory", value: true })).value, true);
+assert.equal((await extensionRequest("snapshot")).settings.showPersonalMemory, true);
+assert.equal((await extensionRequest("snapshot")).settings.showProjectMemory, true);
 const manageSnapshot = await new Promise((resolve) => listener({ type: "dtw:snapshot", accountId: "account123" },
   { url: chrome.runtime.getURL("manage/manage.html") }, resolve));
 assert.equal(manageSnapshot.ok, true);
@@ -83,9 +91,16 @@ snap = await request("snapshot", {});
 assert.equal(snap.sessions.length, 2);
 assert.equal(snap.sessions.find((s) => s.sessionId === newId).classificationPending, true);
 assert.equal(snap.memberships.find((m) => m.sessionId === newId).memoryModeEnabled, true);
-assert.equal(automationTabs, 1);
+assert.equal(automationTabs, 1, "自动化任务串行，归类等待旧会话记忆任务");
 assert.equal(snap.jobs.filter((job) => job.type === "CLASSIFY").length, 1);
-const classifyJob = snap.jobs.find((job) => job.type === "CLASSIFY");
+let classifyJob = snap.jobs.find((job) => job.type === "CLASSIFY");
+assert.equal(classifyJob.status, "QUEUED");
+const predecessor = snap.jobs.find((job) => job.status === "RUNNING");
+await new Promise(resolve => listener({ type: "dtw:automation-result", accountId, jobId: predecessor.jobId, raw: '{"memories":[]}' },
+  { tab: { id: predecessor.tabId, url: "https://chat.deepseek.com/" } }, resolve));
+snap = await request("snapshot", {});
+classifyJob = snap.jobs.find((job) => job.type === "CLASSIFY");
+assert.equal(classifyJob.status, "RUNNING");
 await request("session-observe", { sessionId: "automation-1", title: "归类过程", loadedHistory: true });
 const progress = await new Promise((resolve) => listener({ type: "dtw:automation-progress", accountId,
   jobId: classifyJob.jobId, phase: "WAITING_REPLY", automationSessionId: "automation-1" },
@@ -136,24 +151,7 @@ const project = (await request("project-create", { name: "测试项目" })).proj
 assert.equal((await extensionRequest("snapshot")).projects.some((row) => row.projectId === project.projectId), true);
 await request("membership-move", { sessionId: oldId, projectId: project.projectId });
 await request("memory-toggle", { sessionId: oldId, enabled: true });
-const memoryHistory = { records: [
-  { messageId: 1, parentId: null, role: "USER", status: "FINISHED", fragments: [{ type: "REQUEST", content: "项目需求" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "WIP", fragments: [{ type: "RESPONSE", content: "尚未完成" }] },
-], currentMessageId: 2 };
-await request("history-observe", { sessionId: oldId, ...memoryHistory });
-assert.equal((await request("memory-distill-current", { sessionId: oldId })).started, false);
-memoryHistory.records[1].status = "FINISHED";
-await request("history-observe", { sessionId: oldId, ...memoryHistory });
-assert.equal((await request("memory-distill-current", { sessionId: oldId })).started, true);
-await new Promise((resolve) => setTimeout(resolve, 0));
-assert.equal((await request("memory-distill-current", { sessionId: oldId })).started, false);
-const distillJobs = (await request("snapshot", {})).jobs.filter((job) => job.type === "DISTILL");
-assert.equal(distillJobs.length, 1);
-const completedDistill = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId,
-  jobId: distillJobs[0].jobId, raw: JSON.stringify({ memories: [{ kind: "目标", content: "完成测试项目" }] }) },
-{ tab: { url: "https://chat.deepseek.com/", id: distillJobs[0].tabId } }, resolve));
-assert.equal(completedDistill.status, "DONE");
-assert.equal((await request("snapshot", {})).memories.some((memory) => memory.content === "完成测试项目"), true);
+// Memory update ordering, replacement and retries are covered in session-memory-test.mjs.
 
 const firstClassify = (await request("snapshot", {})).jobs.find((job) => job.type === "CLASSIFY");
 firstClassify.updatedAtMs = Date.now() - 11 * 60000;
@@ -169,7 +167,7 @@ const secondClassify = classifyJobs.find((job) => job.jobId !== firstClassify.jo
 secondClassify.status = "FAILED";
 await db.put("jobs", secondClassify);
 assert.equal((await request("classification-dismiss", { jobId: secondClassify.jobId })).ok, true);
-assert.equal((await request("snapshot", {})).jobs.find((job) => job.jobId === secondClassify.jobId).status, "DONE");
+assert.equal((await request("snapshot", {})).jobs.find((job) => job.jobId === secondClassify.jobId).status, "DISMISSED");
 
 const prepared = await request("prepare-send", { sessionId: "", newChatProjectId: project.projectId, rawInput: "新会话问题" });
 assert.equal(prepared.rollover, false);
@@ -182,6 +180,11 @@ assert.equal(snap.memberships.find((row) => row.sessionId === "new-memory-sessio
 const uncertain = await request("prepare-send", { sessionId: "", newChatProjectId: project.projectId, rawInput: "请保留的草稿" });
 await request("send-status", { jobId: uncertain.jobId, error: "发送结果无法确认" });
 assert.equal((await request("snapshot", {})).jobs.find((job) => job.jobId === uncertain.jobId).rawInput, "请保留的草稿");
+assert.equal((await request("job-dismiss", { jobId: uncertain.jobId })).ok, true);
+const ignoredSend = (await request("snapshot", {})).jobs.find((job) => job.jobId === uncertain.jobId);
+assert.equal(ignoredSend.status, "DISMISSED");
+assert.equal(ignoredSend.rawInput, "请保留的草稿");
+assert.equal((await request("job-dismiss", { jobId: uncertain.jobId })).ok, false);
 
 const legacyAccount = "legacy123";
 await db.put("sessions", { accountId: legacyAccount, sessionId: "legacy-automation", purpose: "USER", title: "旧整理会话" });
@@ -194,286 +197,7 @@ assert.equal(migrated.sessions.find((session) => session.sessionId === "legacy-a
 assert.equal(migrated.memberships.some((row) => row.sessionId === "legacy-automation"), false);
 assert.equal(migrated.projects.some((row) => row.systemKind === "AUTOMATION"), true);
 
-const batchProject = (await request("project-create", { name: "多轮记忆" })).project;
-assert.equal((await request("settings-update", { key: "distillEveryTurns", value: 2 })).value, 2);
-const priorPersonalJob = (await request("snapshot", {})).jobs.find((job) => job.memoryScope === "PERSONAL");
-assert.deepEqual(priorPersonalJob.turnRefs.map((ref) => ref.sessionId), [oldId, newId]);
-assert.equal((await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId,
-  jobId: priorPersonalJob.jobId, raw: JSON.stringify({ memories: [] }) },
-{ tab: { url: "https://chat.deepseek.com/", id: priorPersonalJob.tabId } }, resolve))).status, "DONE");
-const jobsBeforeBatch = projectDistillJobs(await request("snapshot", {})).length;
-for (const [index, sessionId] of ["batch-one", "batch-two"].entries()) {
-  await request("session-observe", { sessionId, loadedHistory: true, title: sessionId });
-  await request("membership-move", { sessionId, projectId: batchProject.projectId });
-  await request("memory-toggle", { sessionId, enabled: true });
-  const rawInput = `原始提问 ${index + 1}`;
-  const preparedSend = await request("prepare-send", { sessionId, rawInput });
-  assert.equal(preparedSend.rollover, false);
-  await request("send-status", { jobId: preparedSend.jobId, confirmed: true, sessionId, userMessageId: 1 });
-  await request("history-observe", { sessionId, currentMessageId: 2, records: [
-    { messageId: 1, parentId: null, role: "USER", status: "FINISHED",
-      fragments: [{ type: "REQUEST", content: `<project_memory>错误旧要求</project_memory>\n\n${rawInput}` }] },
-    { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED",
-      fragments: [{ type: "RESPONSE", content: index === 0
-        ? '# **已确认回答 1**\n<style>.card { color: red }</style>\n<div style="font-size: 20px">路线 &amp; 预算 [清单](https://example.com)</div>\n```css\n.extra { display: block }\n```'
-        : `已确认回答 ${index + 1}` }] },
-  ] });
-  snap = await request("snapshot", {});
-  assert.equal(snap.projects.find((row) => row.projectId === batchProject.projectId).pendingTurnRefs.length, index + 1);
-  assert.equal(projectDistillJobs(snap).length, jobsBeforeBatch + index);
-}
-await new Promise((resolve) => setTimeout(resolve, 0));
-snap = await request("snapshot", {});
-const personalBatchJob = snap.jobs.filter((job) => job.memoryScope === "PERSONAL").at(-1);
-assert.equal(personalBatchJob.turnRefs.length, 2);
-assert.match(personalBatchJob.payload, /原始提问 1/);
-assert.match(personalBatchJob.payload, /已确认回答 1 路线 & 预算 清单/);
-assert.doesNotMatch(personalBatchJob.payload, /<style|style=|color: red|\\n|\*\*/);
-const batchJob = projectDistillJobs(snap).at(-1);
-assert.equal(batchJob.turnRefs.length, 2);
-assert.match(batchJob.payload, /原始提问 1/);
-assert.match(batchJob.payload, /原始提问 2/);
-assert.match(batchJob.payload, /已确认回答 1 路线 & 预算 清单/);
-assert.match(batchJob.payload, /会话 ID：batch-one；助手消息 ID：2/);
-assert.doesNotMatch(batchJob.payload, /<style|style=|color: red|display: block|\\n|\*\*|```/);
-assert.doesNotMatch(batchJob.payload, /错误旧要求/);
-const batchDone = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId,
-  jobId: batchJob.jobId, raw: JSON.stringify({ memories: [{ kind: "决定", content: "批量记忆已确认",
-    sourceSessionId: "batch-one", sourceMessageId: 2 }] }) },
-{ tab: { url: "https://chat.deepseek.com/", id: batchJob.tabId } }, resolve));
-assert.equal(batchDone.status, "DONE");
-snap = await request("snapshot", {});
-assert.equal(snap.projects.find((row) => row.projectId === batchProject.projectId).pendingTurnRefs.length, 0);
-assert.equal(snap.memories.find((row) => row.content === "批量记忆已确认").sourceSessionId, "batch-one");
-assert.equal((await request("settings-update", { key: "distillEveryTurns", value: 1 })).value, 1);
-await request("session-observe", { sessionId: "retry-memory", loadedHistory: true });
-await request("membership-move", { sessionId: "retry-memory", projectId: batchProject.projectId });
-await request("memory-toggle", { sessionId: "retry-memory", enabled: true });
-await request("history-observe", { sessionId: "retry-memory", currentMessageId: 2, records: [
-  { messageId: 1, parentId: null, role: "USER", fragments: [{ type: "REQUEST", content: "重试问题" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "重试回答" }] },
-] });
-await new Promise((resolve) => setTimeout(resolve, 0));
-const failedJob = projectDistillJobs(await request("snapshot", {})).at(-1);
-const failedResult = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId,
-  jobId: failedJob.jobId, error: "模型暂时不可用" },
-{ tab: { url: "https://chat.deepseek.com/", id: failedJob.tabId } }, resolve));
-assert.equal(failedResult.status, "FAILED");
-assert.equal((await request("snapshot", {})).projects.find((row) => row.projectId === batchProject.projectId).pendingTurnRefs.length, 1);
-assert.equal((await extensionRequest("memory-distill-project", { projectId: batchProject.projectId })).started, true);
-
-const startupAccount = "startup123";
-const startupRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`,
-  accountId: startupAccount, ...body }, { tab: { id: 999, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal((await startupRequest("startup-memory-unknown")).ok, false);
-const startupProject = (await startupRequest("project-create", { name: "启动补扫项目" })).project;
-await startupRequest("settings-update", { key: "distillEveryTurns", value: 2 });
-await startupRequest("session-observe", { sessionId: "existing-memory-session", loadedHistory: true });
-await startupRequest("membership-move", { sessionId: "existing-memory-session", projectId: startupProject.projectId });
-await startupRequest("memory-toggle", { sessionId: "existing-memory-session", enabled: true });
-await db.put("jobs", { accountId: startupAccount, jobId: "old-distill", type: "DISTILL", status: "DONE",
-  projectId: startupProject.projectId, sourceSessionId: "existing-memory-session", sourceMessageId: 2,
-  updatedAtMs: Date.now() });
-await db.put("jobs", { accountId: startupAccount, jobId: "helper-tab", type: "CLASSIFY", status: "RUNNING",
-  tabId: 998, updatedAtMs: Date.now() });
-const helperClaim = await new Promise((resolve) => listener({ type: "dtw:startup-memory-claim", accountId: startupAccount },
-  { tab: { id: 998, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(helperClaim.claimed, false);
-const oldRecords = [];
-for (let turn = 1; turn <= 3; turn++) {
-  const userId = turn * 2 - 1;
-  oldRecords.push({ messageId: userId, parentId: userId === 1 ? null : userId - 1,
-    role: "USER", status: "FINISHED", fragments: [{ type: "REQUEST", content: `旧问题 ${turn}` }] });
-  oldRecords.push({ messageId: userId + 1, parentId: userId, role: "ASSISTANT", status: "FINISHED",
-    fragments: [{ type: "RESPONSE", content: `旧回答 ${turn}` }] });
-}
-await startupRequest("history-observe", { sessionId: "existing-memory-session", currentMessageId: 6,
-  records: oldRecords, deferTurnCount: true });
-assert.equal((await startupRequest("snapshot")).projects.find((row) => row.projectId === startupProject.projectId).pendingTurnRefs.length, 0);
-assert.equal((await startupRequest("startup-memory-claim")).claimed, true);
-assert.equal((await startupRequest("startup-memory-claim")).claimed, true);
-const otherTabClaim = await new Promise((resolve) => listener({ type: "dtw:startup-memory-claim", accountId: startupAccount },
-  { tab: { id: 1000, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(otherTabClaim.claimed, false);
-assert.equal((await startupRequest("startup-memory-reconcile", { verifiedSessionIds: [] })).queuedTurns, 0);
-assert.equal((await startupRequest("startup-memory-claim")).claimed, true);
-const firstScan = await startupRequest("startup-memory-reconcile", { verifiedSessionIds: ["existing-memory-session"] });
-assert.equal(firstScan.queuedTurns, 2);
-assert.equal(firstScan.startedProjects, 1);
-assert.equal(firstScan.queuedPersonalTurns, 3);
-assert.equal(firstScan.startedPersonal, true);
-await new Promise((resolve) => setTimeout(resolve, 0));
-let startupSnapshot = await startupRequest("snapshot");
-let startupJobs = projectDistillJobs(startupSnapshot);
-const startupJob = startupJobs.find((job) => job.jobId !== "old-distill");
-assert.deepEqual(startupJob.turnRefs.map((ref) => ref.assistantMessageId), [4, 6]);
-const personalStartupJob = startupSnapshot.jobs.find((job) => job.memoryScope === "PERSONAL");
-assert.deepEqual(personalStartupJob.turnRefs.map((ref) => ref.assistantMessageId), [2, 4, 6]);
-assert.equal((await startupRequest("startup-memory-claim")).claimed, true);
-const secondScan = await startupRequest("startup-memory-reconcile", { verifiedSessionIds: ["existing-memory-session"] });
-assert.equal(secondScan.queuedTurns, 0);
-startupJobs = projectDistillJobs(await startupRequest("snapshot"));
-assert.equal(startupJobs.length, 2);
-const startupDone = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: startupAccount,
-  jobId: startupJob.jobId, raw: JSON.stringify({ memories: [] }) },
-{ tab: { id: startupJob.tabId, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(startupDone.status, "DONE");
-const personalStartupDone = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: startupAccount,
-  jobId: personalStartupJob.jobId, raw: JSON.stringify({ memories: [{ kind: "偏好", content: "偏好中文说明",
-    sourceSessionId: "existing-memory-session", sourceMessageId: 4 }, { kind: "偏好", content: "偏好中文说明",
-    sourceSessionId: "existing-memory-session", sourceMessageId: 4 }] }) },
-{ tab: { id: personalStartupJob.tabId, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(personalStartupDone.status, "DONE");
-startupSnapshot = await startupRequest("snapshot");
-assert.equal(startupSnapshot.memories.some((memory) => memory.scope === "PERSONAL"
-  && memory.content === "偏好中文说明"), true);
-assert.equal(startupSnapshot.jobs.find((job) => job.jobId === personalStartupJob.jobId).result.count, 1);
-assert.equal(startupSnapshot.projects.find((row) => row.systemKind === "PERSONAL").pendingTurnRefs.length, 0);
-assert.equal((await startupRequest("startup-memory-claim")).claimed, true);
-const finalScan = await startupRequest("startup-memory-reconcile", { verifiedSessionIds: ["existing-memory-session"] });
-assert.equal(finalScan.queuedTurns, 0);
-assert.equal(finalScan.queuedPersonalTurns, 0);
-assert.equal((await startupRequest("snapshot")).projects.find((row) => row.projectId === startupProject.projectId).pendingTurnRefs.length, 0);
-await startupRequest("history-observe", { sessionId: "existing-memory-session", currentMessageId: 8, records: [
-  { messageId: 7, parentId: 6, role: "USER", status: "FINISHED", fragments: [{ type: "REQUEST", content: "后续问题" }] },
-  { messageId: 8, parentId: 7, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "后续回答" }] },
-] });
-let pendingBeforeOff = await startupRequest("snapshot");
-assert.equal(pendingBeforeOff.projects.find((row) => row.projectId === startupProject.projectId).pendingTurnRefs.length, 1);
-assert.equal(pendingBeforeOff.projects.find((row) => row.systemKind === "PERSONAL").pendingTurnRefs.length, 1);
-await startupRequest("memory-toggle", { sessionId: "existing-memory-session", enabled: false });
-pendingBeforeOff = await startupRequest("snapshot");
-assert.equal(pendingBeforeOff.projects.find((row) => row.projectId === startupProject.projectId).pendingTurnRefs.length, 1);
-assert.equal(pendingBeforeOff.projects.find((row) => row.systemKind === "PERSONAL").pendingTurnRefs.length, 1);
-
-const projectAutoAccount = "projectauto123";
-const projectAutoRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`,
-  accountId: projectAutoAccount, ...body }, { tab: { id: 777, url: "https://chat.deepseek.com/" } }, resolve));
-const travelProject = (await projectAutoRequest("project-create", { name: "北京旅行计划" })).project;
-await projectAutoRequest("settings-update", { key: "distillEveryTurns", value: 2 });
-await projectAutoRequest("session-observe", { sessionId: "travel-old", loadedHistory: true });
-await projectAutoRequest("membership-move", { sessionId: "travel-old", projectId: travelProject.projectId });
-assert.equal((await projectAutoRequest("snapshot")).memberships.find((row) => row.sessionId === "travel-old").memoryModeEnabled, false);
-const travelRecords = [
-  { messageId: 1, parentId: null, role: "USER", fragments: [{ type: "REQUEST", content: "去北京的日期" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "十月出行" }] },
-  { messageId: 3, parentId: 2, role: "USER", fragments: [{ type: "REQUEST", content: "安排拍摄地点" }] },
-  { messageId: 4, parentId: 3, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "故宫和胡同" }] },
-];
-await projectAutoRequest("history-observe", { sessionId: "travel-old", currentMessageId: 4,
-  records: travelRecords, deferTurnCount: true });
-const travelMembership = (await projectAutoRequest("snapshot")).memberships.find((row) => row.sessionId === "travel-old");
-travelMembership.countedTipIds = [4]; // Older versions marked the latest turn counted without queuing it.
-await db.put("memberships", travelMembership);
-await projectAutoRequest("startup-memory-claim");
-const travelScan = await projectAutoRequest("startup-memory-reconcile", { verifiedSessionIds: ["travel-old"] });
-assert.equal(travelScan.queuedTurns, 2);
-assert.equal(travelScan.queuedPersonalTurns, 2);
-assert.equal(travelScan.startedProjects, 1);
-assert.equal(travelScan.startedPersonal, true);
-const travelJob = projectDistillJobs(await projectAutoRequest("snapshot")).at(-1);
-assert.deepEqual(travelJob.turnRefs.map((ref) => ref.assistantMessageId), [2, 4]);
-assert.equal((await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: projectAutoAccount,
-  jobId: travelJob.jobId, raw: JSON.stringify({ memories: [] }) },
-{ tab: { id: travelJob.tabId, url: "https://chat.deepseek.com/" } }, resolve))).status, "DONE");
-await projectAutoRequest("history-observe", { sessionId: "travel-old", currentMessageId: 6, records: [
-  { messageId: 5, parentId: 4, role: "USER", fragments: [{ type: "REQUEST", content: "再加一天" }] },
-  { messageId: 6, parentId: 5, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "加一天自由活动" }] },
-] });
-assert.equal((await projectAutoRequest("snapshot")).projects.find((row) => row.projectId === travelProject.projectId).pendingTurnRefs.length, 1);
-const manualTravel = await new Promise((resolve) => listener({ type: "dtw:memory-distill-project",
-  accountId: projectAutoAccount, projectId: travelProject.projectId },
-{ url: chrome.runtime.getURL("manage/manage.html") }, resolve));
-assert.equal(manualTravel.started, true);
-const manualProject = (await projectAutoRequest("project-create", { name: "手动整理项目" })).project;
-await projectAutoRequest("session-observe", { sessionId: "manual-old", loadedHistory: true });
-await projectAutoRequest("membership-move", { sessionId: "manual-old", projectId: manualProject.projectId });
-await projectAutoRequest("history-observe", { sessionId: "manual-old", currentMessageId: 2, deferTurnCount: true,
-  records: travelRecords.slice(0, 2) });
-assert.equal((await projectAutoRequest("snapshot")).projects.find((row) => row.projectId === manualProject.projectId).pendingTurnRefs.length, 0);
-const manualNoQueue = await new Promise((resolve) => listener({ type: "dtw:memory-distill-project",
-  accountId: projectAutoAccount, projectId: manualProject.projectId },
-{ url: chrome.runtime.getURL("manage/manage.html") }, resolve));
-assert.equal(manualNoQueue.started, true);
-
-const classifyAccount = "classifyauto123";
-const classifyRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`,
-  accountId: classifyAccount, ...body }, { tab: { id: 888, url: "https://chat.deepseek.com/" } }, resolve));
-const classifiedProject = (await classifyRequest("project-create", { name: "自动归类目标" })).project;
-await classifyRequest("settings-update", { key: "memoryModeDefault", value: true });
-await classifyRequest("settings-update", { key: "distillEveryTurns", value: 1 });
-await classifyRequest("turn-completed", { sessionId: "classify-new-session", newSession: true,
-  title: "新会话标题", history: { currentMessageId: 2, records: [
-    { messageId: 1, parentId: null, role: "USER", status: "FINISHED",
-      fragments: [{ type: "REQUEST", content: "请用中文回答" }] },
-    { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED",
-      fragments: [{ type: "RESPONSE", content: "好的" }] },
-  ] } });
-await new Promise((resolve) => setTimeout(resolve, 0));
-const classifyAutoJob = (await classifyRequest("snapshot")).jobs.find((job) => job.type === "CLASSIFY");
-const classifyAutoDone = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: classifyAccount,
-  jobId: classifyAutoJob.jobId, raw: JSON.stringify({ sessionId: "classify-new-session", choice: "EXISTING",
-    projectId: classifiedProject.projectId }) },
-{ tab: { id: classifyAutoJob.tabId, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(classifyAutoDone.status, "DONE");
-const classifiedSnapshot = await classifyRequest("snapshot");
-assert.equal(classifiedSnapshot.memberships.find((item) => item.sessionId === "classify-new-session").projectId,
-  classifiedProject.projectId);
-assert.equal(projectDistillJobs(classifiedSnapshot).length, 1);
-assert.equal(classifiedSnapshot.jobs.filter((job) => job.memoryScope === "PERSONAL").length, 1);
-const classifiedPersonalJob = classifiedSnapshot.jobs.find((job) => job.memoryScope === "PERSONAL");
-const classifiedPersonalFailed = await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: classifyAccount,
-  jobId: classifiedPersonalJob.jobId, error: "暂时无法整理" },
-{ tab: { id: classifiedPersonalJob.tabId, url: "https://chat.deepseek.com/" } }, resolve));
-assert.equal(classifiedPersonalFailed.status, "FAILED");
-assert.equal((await classifyRequest("memory-distill-personal")).started, true);
-assert.equal((await classifyRequest("snapshot")).jobs.filter((job) => job.memoryScope === "PERSONAL").length, 2);
-
-const personalScopeAccount = "personalscope123";
-const personalScopeRequest = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`,
-  accountId: personalScopeAccount, ...body }, { tab: { id: 889, url: "https://chat.deepseek.com/" } }, resolve));
-await personalScopeRequest("settings-update", { key: "distillEveryTurns", value: 1 });
-await personalScopeRequest("session-observe", { sessionId: "unassigned-user", loadedHistory: true });
-await personalScopeRequest("history-observe", { sessionId: "unassigned-user", currentMessageId: 2, records: [
-  { messageId: 1, parentId: null, role: "USER", fragments: [{ type: "REQUEST", content: "以后回答请先给结论" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "好的" }] },
-] });
-let personalScopeSnapshot = await personalScopeRequest("snapshot");
-assert.equal(personalScopeSnapshot.memberships.find((item) => item.sessionId === "unassigned-user").projectId, null);
-assert.equal(personalScopeSnapshot.memberships.find((item) => item.sessionId === "unassigned-user").memoryModeEnabled, false);
-const unassignedPersonalJob = personalScopeSnapshot.jobs.find((job) => job.memoryScope === "PERSONAL");
-assert.match(unassignedPersonalJob.payload, /以后回答请先给结论/);
-assert.equal((await new Promise((resolve) => listener({ type: "dtw:automation-result", accountId: personalScopeAccount,
-  jobId: unassignedPersonalJob.jobId, raw: JSON.stringify({ memories: [{ kind: "偏好", content: "希望回答先给结论",
-    sourceSessionId: "unassigned-user", sourceMessageId: 2 }] }) },
-{ tab: { id: unassignedPersonalJob.tabId, url: "https://chat.deepseek.com/" } }, resolve))).status, "DONE");
-assert.equal((await personalScopeRequest("snapshot")).memories.some((item) => item.scope === "PERSONAL"
-  && item.content === "希望回答先给结论"), true);
-await personalScopeRequest("automation-mark", { sessionId: "unassigned-user" });
-assert.equal((await personalScopeRequest("snapshot")).memories.find((item) =>
-  item.content === "希望回答先给结论").state, "STALE");
-await personalScopeRequest("session-observe", { sessionId: "automation-only", loadedHistory: true });
-await personalScopeRequest("automation-mark", { sessionId: "automation-only" });
-await personalScopeRequest("history-observe", { sessionId: "automation-only", currentMessageId: 2, records: [
-  { messageId: 1, parentId: null, role: "USER", fragments: [{ type: "REQUEST", content: "自动化提示" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "自动化回答" }] },
-] });
-personalScopeSnapshot = await personalScopeRequest("snapshot");
-assert.equal(personalScopeSnapshot.jobs.filter((job) => job.memoryScope === "PERSONAL").length, 1);
-assert.equal(personalScopeSnapshot.projects.find((item) => item.systemKind === "PERSONAL").pendingTurnRefs.length, 0);
-await personalScopeRequest("session-observe", { sessionId: "old-unassigned", loadedHistory: true });
-await personalScopeRequest("history-observe", { sessionId: "old-unassigned", currentMessageId: 2, deferTurnCount: true, records: [
-  { messageId: 1, parentId: null, role: "USER", fragments: [{ type: "REQUEST", content: "我习惯使用中文" }] },
-  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "记住了" }] },
-] });
-assert.equal((await personalScopeRequest("startup-memory-claim")).claimed, true);
-const unassignedScan = await personalScopeRequest("startup-memory-reconcile",
-  { verifiedSessionIds: ["old-unassigned", "automation-only"] });
-assert.equal(unassignedScan.queuedPersonalTurns, 1);
-assert.equal(unassignedScan.startedPersonal, true);
-personalScopeSnapshot = await personalScopeRequest("snapshot");
-assert.deepEqual(personalScopeSnapshot.jobs.filter((job) => job.memoryScope === "PERSONAL").at(-1).turnRefs,
-  [{ sessionId: "old-unassigned", assistantMessageId: 2 }]);
+// Unified consolidation, scope validation and startup recovery are covered in session-memory-test.mjs.
 
 storageValues["dtw.sidebar.v1"] = { tasks: [{ id: "legacy-project", name: "旧项目",
   conversationIds: ["legacy-session"], createdAt: "2025-01-01T00:00:00.000Z" },
@@ -485,8 +209,8 @@ userFacts: [{ id: "fact-1", key: "language", value: "中文", category: "prefere
 settings: { turnsPerOrganize: 7, autoAnalyze: true } };
 const migrationAccount = "migration123";
 await db.put("projects", { accountId: migrationAccount, projectId: "existing-project", name: "旧项目",
-  archived: false, pendingTurnRefs: [] });
-const migrationRequest = (type) => new Promise((resolve) => listener({ type: `dtw:${type}`,
+  archived: false, pendingSessionRefs: [] });
+const migrationRequest = (type) => new Promise((resolve) => listener({ type: `dtw:${type}`, createdAtMs: 1,
   accountId: migrationAccount }, { tab: { id: 777, url: "https://chat.deepseek.com/" } }, resolve));
 const migratedLegacy = await migrationRequest("snapshot");
 assert.equal(migratedLegacy.legacyMigration.status, "imported");
@@ -497,6 +221,233 @@ assert.equal(migratedLegacy.memberships.find((item) => item.sessionId === "legac
 assert.equal(migratedLegacy.memberships.find((item) => item.sessionId === "legacy-session")?.projectId, "existing-project");
 assert.equal(migratedLegacy.memories.filter((item) => item.projectId === "existing-project").length, 3);
 assert.equal(migratedLegacy.memories.filter((item) => item.scope === "PERSONAL").length, 1);
-assert.equal(migratedLegacy.settings.distillEveryTurns, 7);
+assert.equal(migratedLegacy.settings.distillEveryTurns, undefined, "旧轮数设置不再迁入");
 assert.equal((await migrationRequest("snapshot")).memories.length, migratedLegacy.memories.length);
+
+const strictAccount = "strict123";
+const strictRequest = (type, body = {}) => {
+  storageValues.accountId = strictAccount;
+  return new Promise(resolve=>listener({type:'dtw:'+type,accountId:strictAccount,...body},{tab:{id:1234,url:'https://chat.deepseek.com/'}},resolve));
+};
+let strictSnapshot;
+await db.put('memories',{accountId:strictAccount,memoryId:'taste',scope:'PERSONAL',projectId:null,kind:'偏好',content:'喜欢古典音乐',state:'ACTIVE',pinnedByUser:true,version:1,updatedAtMs:Date.now()});
+assert.equal((await strictRequest("memory-save", { memory: { scope: "PERSONAL", kind: "资料",
+  content: "我".repeat(2500) } })).ok, true);
+assert.equal((await strictRequest("memory-save", { memory: { scope: "PERSONAL", kind: "资料",
+  content: "你".repeat(2400) } })).ok, true);
+assert.equal((await strictRequest("snapshot")).jobs.some((job) => job.type === "COMPACT"), false,
+  "超过旧的 2000 字上限但未到 5000 字时不启动压缩");
+const overBudget = await strictRequest("memory-save", { memory: { scope: "PERSONAL", kind: "资料",
+  content: "他".repeat(100) } });
+assert.equal(overBudget.ok, false);
+assert.match(overBudget.error, /5000 字/);
+strictSnapshot = await strictRequest("snapshot");
+assert.equal(strictSnapshot.personalMemoryBudget.limit, 5000);
+assert.equal(strictSnapshot.personalMemoryBudget.used, 4906, "超限新增不能部分写入");
+const imported = await strictRequest("memory-import", { payload: { format: "dtw-memories-v1", memories: [
+  { scope: "PERSONAL", kind: "偏好", content: "喜欢".repeat(600) },
+] } });
+assert.equal(imported.imported, 1);
+assert.equal((await strictRequest("snapshot")).memories.find((item) => item.content === "喜欢".repeat(600)).state, "ACTIVE");
+assert.ok((await strictRequest("snapshot")).jobs.some((job) => job.type === "COMPACT"));
+await db.put("memories", { accountId: strictAccount, memoryId: "legacy-oversize", scope: "PERSONAL",
+  projectId: null, kind: "偏好", content: "旧".repeat(3000), state: "ACTIVE", pinnedByUser: false,
+  version: 1, updatedAtMs: 1 });
+strictSnapshot = await strictRequest("snapshot");
+assert.equal(strictSnapshot.memories.find((item) => item.memoryId === "legacy-oversize").state, "ACTIVE");
+assert.ok(strictSnapshot.personalMemoryBudget.used > 5000, "压缩完成前保留所有原文，不自动停用");
+const strictProject = (await strictRequest("project-create", { name: "个人记忆注入测试" })).project;
+const preparedStrictSend = await strictRequest("prepare-send", { sessionId: "", newChatProjectId: strictProject.projectId,
+  rawInput: "测试记忆注入" });
+assert.equal(preparedStrictSend.ok, true);
+assert.match(preparedStrictSend.prompt, /喜欢古典音乐/);
+assert.doesNotMatch(preparedStrictSend.prompt, /旧旧旧旧旧旧/);
+const personalSection = preparedStrictSend.prompt.split("## 个人记忆\n")[1].split("## 项目记忆：")[0];
+const personalLines = personalSection.split("\n").filter((line) => /^\d+\. /.test(line));
+assert.ok(personalLines.length > 0);
+const sentPersonalCharacters = personalLines.reduce((sum, line) => sum + Array.from(line.replace(/^\d+\. /, "")).length, 0);
+assert.ok(sentPersonalCharacters > 2000 && sentPersonalCharacters <= 5000,
+  "首条消息可附带超过旧上限的个人记忆，并遵守新预算");
+// Both scopes attach only on the first message; personal memory is independent of the project switch.
+const injectionAccount = "injection123";
+const injectionRequest = (type, body = {}) => new Promise(resolve => listener({ type: `dtw:${type}`, accountId: injectionAccount, ...body },
+  { tab: { id: 42, url: "https://chat.deepseek.com/" } }, resolve));
+assert.equal((await injectionRequest("prepare-send", { rawInput: "普通首条消息" })).native, true);
+const projectOnly = (await injectionRequest("project-create", { name: "仅项目记忆", goalShort: "完成报告" })).project;
+const projectOnlySend = await injectionRequest("prepare-send", { newChatProjectId: projectOnly.projectId, rawInput: "开始报告" });
+assert.match(projectOnlySend.prompt, /以下附带项目「仅项目记忆」的目标与记忆/);
+assert.match(projectOnlySend.prompt, /## 项目记忆：仅项目记忆\n### 目标\n1\. 完成报告/);
+assert.doesNotMatch(projectOnlySend.prompt, /## 个人记忆/);
+await db.put("memories", { accountId: injectionAccount, memoryId: "personal", scope: "PERSONAL", projectId: null,
+  kind: "偏好", content: "回答简短，先给结论", state: "ACTIVE", pinnedByUser: true, version: 1 });
+await db.put("memories", { accountId: injectionAccount, memoryId: "disabled", scope: "PERSONAL", projectId: null,
+  kind: "偏好", content: "已停用的偏好", state: "DISABLED", pinnedByUser: true, version: 1 });
+const firstPersonal = await injectionRequest("prepare-send", { rawInput: "首条问题" });
+assert.equal(firstPersonal.ok, true);
+assert.equal(firstPersonal.chooseProject, undefined);
+assert.equal(firstPersonal.rollover, false);
+assert.match(firstPersonal.prompt, /## 个人记忆\n### 偏好\n1\. 回答简短，先给结论/);
+assert.match(firstPersonal.prompt, /以下附带个人记忆/);
+assert.match(firstPersonal.prompt, /回答下方的本轮问题/);
+assert.match(firstPersonal.prompt, /以用户当前明确要求为准/);
+assert.doesNotMatch(firstPersonal.prompt, /已停用的偏好|喜欢古典音乐/);
+assert.ok(firstPersonal.prompt.endsWith("<current_question>\n首条问题\n</current_question>"));
+await injectionRequest("send-status", { jobId: firstPersonal.jobId, confirmed: true, sessionId: "personal-first", userMessageId: 1 });
+assert.equal((await db.get("memberships", [injectionAccount, "personal-first"])).projectId, null);
+assert.equal((await db.get("memberships", [injectionAccount, "personal-first"])).memoryModeEnabled, false);
+assert.equal((await db.get("messages", [injectionAccount, "personal-first", 1])).originalInput, "首条问题");
+assert.equal((await db.get("sessions", [injectionAccount, "personal-first"])).hasUserMessage, true);
+assert.equal((await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "第二条问题" })).native, true,
+  "首条确认后，即使分支末端尚未同步，也不能再附带个人记忆");
+const nextPersonal = await injectionRequest("prepare-send", { rawInput: "另一会话的首条问题" });
+assert.match(nextPersonal.prompt, /回答简短/);
+
+// A precreated, verified-empty session still gets personal memory; preparation and failures do not consume it.
+await injectionRequest("session-observe", { sessionId: "empty-first", loadedHistory: true });
+await injectionRequest("history-observe", { sessionId: "empty-first", records: [], currentMessageId: null });
+const emptyFirst = await injectionRequest("prepare-send", { sessionId: "empty-first", rawInput: "空会话首条问题" });
+assert.match(emptyFirst.prompt, /回答简短/);
+await injectionRequest("send-status", { jobId: emptyFirst.jobId, error: "尚未提交" });
+const retryFirst = await injectionRequest("prepare-send", { sessionId: "empty-first", rawInput: "重试首条问题" });
+assert.match(retryFirst.prompt, /回答简短/);
+await injectionRequest("send-status", { jobId: retryFirst.jobId, confirmed: true, sessionId: "empty-first" });
+await injectionRequest("history-observe", { sessionId: "empty-first", records: [], currentMessageId: null });
+assert.equal((await injectionRequest("prepare-send", { sessionId: "empty-first", rawInput: "后续问题" })).native, true,
+  "没有消息 ID 的确认或滞后空历史也不能导致重复注入");
+await injectionRequest("session-observe", { sessionId: "existing-personal", loadedHistory: true });
+assert.equal((await injectionRequest("prepare-send", { sessionId: "existing-personal", rawInput: "旧会话继续" })).native, true,
+  "历史尚未核对的旧会话不能被当作首条发送");
+await injectionRequest("history-observe", { sessionId: "existing-personal", ...historicalHistory });
+assert.equal((await injectionRequest("prepare-send", { sessionId: "existing-personal", rawInput: "旧会话下一轮" })).native, true);
+
+// Reload the worker against the same stored sessions, without retaining any page state.
+let restartedListener;
+const restartedChrome = { ...chrome, runtime: { ...chrome.runtime, onMessage: { addListener(fn) { restartedListener = fn; } } } };
+vm.runInNewContext(source, { DTWDB: db, chrome: restartedChrome, importScripts() {}, crypto: globalThis.crypto, structuredClone,
+  Date, Number, String, Boolean, Array, Object, Set, Map, Promise, JSON, Math, TextEncoder, console, setTimeout });
+const afterReload = await new Promise(resolve => restartedListener({ type: "dtw:prepare-send", accountId: injectionAccount,
+  sessionId: "personal-first", rawInput: "刷新后继续" }, { tab: { id: 42, url: "https://chat.deepseek.com/" } }, resolve));
+assert.equal(afterReload.native, true, "重启后台和重新打开会话后仍不重复附带个人记忆");
+const injectionProject = (await injectionRequest("project-create", { name: "文档项目", goalShort: "完成使用文档" })).project;
+await injectionRequest("membership-move", { sessionId: "personal-first", projectId: injectionProject.projectId });
+await db.put("memories", { accountId: injectionAccount, memoryId: "project", scope: "PROJECT", projectId: injectionProject.projectId,
+  kind: "决定", content: "用中文编写", state: "ACTIVE", pinnedByUser: true, version: 1 });
+const projectOff = await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "第二条问题" });
+assert.equal(projectOff.native, true);
+await injectionRequest("memory-toggle", { sessionId: "personal-first", enabled: true });
+const projectOn = await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "第三条问题" });
+assert.equal(projectOn.native, true, "会话中途开启项目记忆也不会补发记忆");
+await db.put("memories", { accountId: injectionAccount, memoryId: "profile", scope: "PERSONAL", projectId: null,
+  kind: "资料", content: "技术文档作者", state: "ACTIVE", pinnedByUser: false, version: 1 });
+await db.put("memories", { accountId: injectionAccount, memoryId: "workflow", scope: "PERSONAL", projectId: null,
+  kind: "工作方式", content: "先确认需求\n再分步实现", state: "ACTIVE", pinnedByUser: false, version: 1 });
+await db.put("memories", { accountId: injectionAccount, memoryId: "language", scope: "PERSONAL", projectId: null,
+  kind: "偏好", content: "回复使用中文", state: "ACTIVE", pinnedByUser: false, version: 1 });
+await db.put("memories", { accountId: injectionAccount, memoryId: "legacy-kind", scope: "PROJECT", projectId: injectionProject.projectId,
+  kind: "旧类别", content: "旧类别归入其他", state: "ACTIVE", pinnedByUser: false, version: 1 });
+await db.put("memories", { accountId: injectionAccount, memoryId: "constraint", scope: "PROJECT", projectId: injectionProject.projectId,
+  kind: "约束", content: "支持移动端", state: "ACTIVE", pinnedByUser: false, version: 1 });
+const projectQuestion = "请编写第一章\n保留这个引用：<current_question>示例</current_question>";
+const firstProject = await injectionRequest("prepare-send", { newChatProjectId: injectionProject.projectId, rawInput: projectQuestion });
+assert.equal(firstProject.rollover, false);
+assert.match(firstProject.prompt, /以下附带个人记忆和项目「文档项目」的目标与记忆/);
+assert.match(firstProject.prompt, /## 个人记忆\n### 资料\n1\. 技术文档作者\n\n### 偏好\n1\. 回答简短，先给结论\n2\. 回复使用中文\n\n### 工作方式\n1\. 先确认需求\n    再分步实现/);
+assert.equal(firstProject.prompt.match(/^### 偏好$/gm).length, 1, "同类多条记忆共用一个类别标签");
+assert.doesNotMatch(firstProject.prompt, /^\[(?:个人|文档项目)\//m, "条目不重复附带标签");
+assert.match(firstProject.prompt, /## 项目记忆：文档项目\n### 目标\n1\. 完成使用文档\n\n### 约束\n1\. 支持移动端\n\n### 决定\n1\. 用中文编写\n\n### 其他\n1\. 旧类别归入其他/);
+assert.equal(firstProject.prompt.match(/<current_question>\s*([\s\S]*?)\s*<\/current_question>\s*$/)[1], projectQuestion);
+await injectionRequest("send-status", { jobId: firstProject.jobId, confirmed: true, sessionId: "project-first", userMessageId: 1 });
+assert.equal((await db.get("memberships", [injectionAccount, "project-first"])).memoryModeEnabled, true);
+const jobsBeforeSecond = (await db.all("jobs", injectionAccount)).length;
+assert.equal((await injectionRequest("prepare-send", { sessionId: "project-first", rawInput: "第二章" })).native, true);
+assert.equal((await db.all("jobs", injectionAccount)).length, jobsBeforeSecond, "无需记忆和接续时不创建发送作业");
+const projectAfterReload = await new Promise(resolve => restartedListener({ type: "dtw:prepare-send", accountId: injectionAccount,
+  sessionId: "project-first", rawInput: "刷新后第三章" }, { tab: { id: 42, url: "https://chat.deepseek.com/" } }, resolve));
+assert.equal(projectAfterReload.native, true, "项目记忆在刷新后台后也不重复发送");
+await db.put("messages", { accountId: injectionAccount, sessionId: "personal-first", messageId: 2, parentId: 1,
+  role: "ASSISTANT", status: "FINISHED", accumulatedTokenUsage: 65000, fragments: [{ type: "RESPONSE", content: "之前的工作" }] });
+await db.put("sessions", { ...await db.get("sessions", [injectionAccount, "personal-first"]), currentMessageId: 2 });
+const successor = await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "接续问题" });
+assert.equal(successor.rollover, true);
+assert.match(successor.prompt, /回答简短/);
+assert.equal(successor.prompt.match(/## 个人记忆/g).length, 1, "接续新会话的首条消息带入一次个人记忆");
+assert.equal(successor.prompt.match(/## 项目记忆：文档项目/g).length, 1);
+assert.match(successor.prompt, /<recent_progress>\n用户: 首条问题/);
+assert.ok(successor.prompt.endsWith("<current_question>\n接续问题\n</current_question>"));
+// Finish unrelated fixture tasks before exercising the global rollover slot.
+for (const job of await db.all("jobs")) if (job.status === "RUNNING") await db.put("jobs", { ...job, status: "DONE" });
+await db.put("jobs", { ...await db.get("jobs", [injectionAccount, successor.jobId]), status: "RUNNING", tabId: 42 });
+await injectionRequest("send-status", { jobId: successor.jobId, confirmed: true, sessionId: "personal-successor", userMessageId: 1, waitForReply: true });
+assert.equal((await db.get("jobs", [injectionAccount, successor.jobId])).status, "RUNNING", "收到用户消息仍占用接续队列，等待回复完成");
+await injectionRequest("send-status", { jobId: successor.jobId, replyFinished: true });
+assert.equal((await db.get("jobs", [injectionAccount, successor.jobId])).status, "DONE");
+const successorSecond = await injectionRequest("prepare-send", { sessionId: "personal-successor", rawInput: "接续会话第二条" });
+assert.equal(successorSecond.native, true, "接续会话第二条不重复附带两类记忆");
+await db.put("sessions", { accountId: injectionAccount, sessionId: "helper", purpose: "CLASSIFY" });
+assert.equal((await injectionRequest("prepare-send", { sessionId: "helper", rawInput: "自动化输入" })).native, true);
+const unicodeAccount = "unicode123";
+const unicodeSave = (content) => new Promise(resolve => listener({ type: "dtw:memory-save", accountId: unicodeAccount,
+  memory: { scope: "PERSONAL", kind: "资料", content } }, { tab: { id: 42, url: "https://chat.deepseek.com/" } }, resolve));
+assert.equal((await unicodeSave("中".repeat(1000) + "😀".repeat(1000))).ok, true);
+assert.equal((await unicodeSave("文".repeat(1500))).ok, true);
+assert.equal((await unicodeSave("字".repeat(1500))).ok, true);
+assert.equal((await unicodeSave("a")).ok, false); // Chinese and supplementary characters each count once; total is exactly 5000.
+// Deletions survive delayed DOM observations and remove both pending scopes.
+await request("session-observe", { sessionId: "deleted-session", loadedHistory: true, title: "AI复刻前端样式技巧" });
+await db.put("memberships", { accountId, sessionId: "deleted-session", projectId: "delete-project" });
+for (const projectId of ["delete-project", "dtw-personal-memory"]) {
+  const project = await db.get("projects", [accountId, projectId]);
+  await db.put("projects", { ...project, accountId, projectId,
+    currentSessionId: "deleted-session", pendingSessionRefs: [{ sessionId: "deleted-session", assistantMessageId: 2 }], pendingTurnCount: 1 });
+}
+await db.put("jobs", { accountId, jobId: "deleted-source-job", type: "CLASSIFY", status: "QUEUED", sourceSessionId: "deleted-session" });
+await Promise.all([
+  request("session-observe", { sessionId: "deleted-session", title: "延迟改名" }),
+  request("session-delete", { sessionIds: ["deleted-session"] }),
+  request("session-observe", { sessionId: "deleted-session", title: "旧节点", loadedHistory: true }),
+]);
+assert.equal((await db.get("sessions", [accountId, "deleted-session"])).deleted, true);
+assert.equal((await request("history-observe", { sessionId: "deleted-session", ...historicalHistory })).ignored, true);
+for (const projectId of ["delete-project", "dtw-personal-memory"])
+  assert.equal((await db.get("projects", [accountId, projectId])).pendingSessionRefs.length, 0);
+assert.equal((await db.get("projects", [accountId, "delete-project"])).currentSessionId, null);
+assert.equal((await db.get("jobs", [accountId, "deleted-source-job"])).status, "CANCELLED");
+assert.equal((await request("session-observe", { sessionId: "deleted-session", newSession: true })).ignored, true);
+const retentionAccount = "retention123";
+for (let index = 0; index < 13; index++) await db.put("sessions", {
+  accountId: retentionAccount, sessionId: `auto-${index}`, purpose: index % 2 ? "MEMORY" : "CLASSIFY", updatedAtMs: index });
+await db.put("sessions", { accountId: retentionAccount, sessionId: "ordinary", purpose: "USER", updatedAtMs: -1 });
+await db.put("sessions", { accountId: "another123", sessionId: "other-account-auto", purpose: "AUTOMATION", updatedAtMs: -1 });
+await db.put("jobs", { accountId: retentionAccount, jobId: "active", status: "RUNNING", automationSessionId: "auto-0" });
+const batches = [];
+let remoteDeleteOk = false;
+chrome.tabs.sendMessage = async (_tabId, message) => {
+  batches.push(structuredClone(message)); return { ok: remoteDeleteOk, error: "remote failure" };
+};
+const prune = () => new Promise(resolve => listener({ type: "dtw:automation-prune", accountId: retentionAccount },
+  { tab: { id: 42, url: "https://chat.deepseek.com/a/chat" } }, resolve));
+assert.equal((await prune()).ok, false);
+assert.equal((await db.get("sessions", [retentionAccount, "auto-1"])).deleted, undefined);
+assert.deepEqual(Array.from(batches.at(-1).sessionIds), ["auto-2", "auto-1"]);
+remoteDeleteOk = true;
+await Promise.all([prune(), prune()]);
+assert.equal(batches.length, 2); // Concurrent tabs cannot delete the same batch twice.
+assert.equal((await db.get("sessions", [retentionAccount, "auto-1"])).deleted, true);
+assert.equal((await db.get("sessions", [retentionAccount, "auto-0"])).deleted, undefined);
+await db.put("jobs", { accountId: retentionAccount, jobId: "active", status: "DONE", automationSessionId: "auto-0" });
+assert.equal((await prune()).deleted, 1);
+assert.equal((await db.all("sessions", retentionAccount)).filter(s => !s.deleted && s.purpose !== "USER").length, 10);
+assert.equal((await db.get("sessions", [retentionAccount, "ordinary"])).deleted, undefined);
+assert.equal((await db.get("sessions", ["another123", "other-account-auto"])).deleted, undefined);
+assert.equal((await prune()).deleted, undefined);
+await db.put("sessions", { accountId: retentionAccount, sessionId: "new-helper", purpose: "MEMORY", updatedAtMs: 100 });
+remoteDeleteOk = false;
+const automaticPrune = () => new Promise(resolve => listener({ type: "dtw:automation-prune", accountId: retentionAccount, automatic: true },
+  { tab: { id: 42, url: "https://chat.deepseek.com/a/chat" } }, resolve));
+assert.equal((await automaticPrune()).ok, false);
+const failedAttempts = batches.length;
+await automaticPrune();
+assert.equal(batches.length, failedAttempts, "自动清理失败不循环重试");
+const cleanupIssue = (await db.all("jobs", retentionAccount)).find(job => job.type === "CLEANUP");
+assert.equal(cleanupIssue.status, "NEEDS_REVIEW", "清理未完成也保留提醒记录");
 console.log(JSON.stringify({ ok: true }));

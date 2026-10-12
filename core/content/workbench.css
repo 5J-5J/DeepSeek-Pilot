@@ -1,25 +1,69 @@
-#dtw-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
-.dtw-owned { --dtw-text: #eceff4; --dtw-muted: #a4aab4; --dtw-line: rgba(255,255,255,.12); --dtw-hover: rgba(255,255,255,.08); --dtw-accent: #79a9ff; color: var(--dtw-text); font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
-body:not(.dark) .dtw-owned { --dtw-text: #272b34; --dtw-muted: #656e7b; --dtw-line: rgba(0,0,0,.11); --dtw-hover: rgba(0,0,0,.06); --dtw-accent: #346de0; }
+#dtw-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; font-size: clamp(15px, 1em, 17px); line-height: 1.5; }
+/* Hide the supplied native icon's control while keeping its React nodes mounted. */
+:is(button, [role="button"], .ds-icon-button):has(svg[viewBox="0 0 16 16"] path[d="M14.2004 9.73944V11.0402H7.40356V9.73944H14.2004Z"] + path[d="M14.2004 2.15491V3.45569H7.40356V2.15491H14.2004Z"]) { display: none !important; }
+.dtw-owned { --dtw-text: #ececec; --dtw-muted: #a6a6a6; --dtw-line: rgba(255,255,255,.12); --dtw-hover: rgba(255,255,255,.08); --dtw-surface: #252525; --dtw-accent: #79a9ff; color: var(--dtw-text); font-size: clamp(15px, 1em, 17px); line-height: 1.5; }
+body:not(.dark) .dtw-owned { --dtw-text: #292929; --dtw-muted: #737373; --dtw-line: rgba(0,0,0,.09); --dtw-hover: rgba(0,0,0,.05); --dtw-surface: #fff; --dtw-accent: #346de0; }
 .dtw-owned * { box-sizing: border-box; }
 .dtw-owned button { color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer; }
-.dtw-tree { padding: 5px 8px 10px; }
+.dtw-tree { padding: 5px 8px 12px; font-size: 14px; }
 .dtw-loading { padding: 10px 6px; color: var(--dtw-muted); }
-.dtw-tools,.dtw-group-head,.dtw-session { display: flex; align-items: center; min-height: 30px; gap: 3px; }
-.dtw-tools { padding: 3px 4px 8px; border-bottom: 1px solid var(--dtw-line); margin-bottom: 7px; }
-.dtw-tools strong { flex: 1; font-size: 13px; }
-.dtw-tools button { width: 26px; height: 26px; border-radius: 7px; font-size: 18px; }
-.dtw-tools button:hover,.dtw-group-head button:hover,.dtw-session button:hover { background: var(--dtw-hover); }
-.dtw-group { margin: 3px 0 5px; }
-.dtw-group-head > button:first-child { width: 23px; height: 26px; border-radius: 6px; color: var(--dtw-muted); }
-.dtw-group-name { flex: 1; min-width: 0; height: 29px; text-align: left; padding: 3px 5px; border-radius: 7px; font-weight: 600 !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dtw-group-name small { font-weight: 400; color: var(--dtw-muted); margin-left: 5px; }
-.dtw-group-items { margin-left: 22px; }
-.dtw-session { border-radius: 7px; color: var(--dtw-muted); }
-.dtw-session.active { color: var(--dtw-accent); background: var(--dtw-hover); }
-.dtw-session > button:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 5px 6px; border-radius: 7px; }
-.dtw-session > .dtw-session-menu { width: 24px; height: 26px; opacity: .5; border-radius: 6px; }
-.dtw-session:hover > .dtw-session-menu { opacity: 1; }
+.dtw-icon { display: block; width: 18px; height: 18px; flex: 0 0 18px; }
+.dtw-tools,.dtw-group-head,.dtw-session { display: flex; align-items: center; min-height: 36px; }
+.dtw-tools { margin-bottom: 4px; padding-right: 4px; color: var(--dtw-muted); }
+.dtw-section-title { display: flex; align-items: center; gap: 5px; flex: 1; padding: 8px 10px; text-align: left; font-size: 13px !important; }
+.dtw-section-caret { width: 12px; height: 12px; flex-basis: 12px; transform: rotate(90deg); transition: transform 220ms ease; }
+[aria-expanded="false"] > .dtw-section-caret { transform: rotate(0deg); }
+.dtw-row-action { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border-radius: 6px; color: var(--dtw-muted) !important; }
+.dtw-row-action .dtw-icon { width: 16px; height: 16px; }
+.dtw-row-action.has-alert { position: relative; opacity: 1 !important; }
+.dtw-alert-dot { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: #ef4444; }
+.dtw-request-notice { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; max-width: min(640px,90vw); padding: 10px 14px; border: 1px solid #e05a5a; border-radius: 9px; background: var(--dtw-surface); color: #e05a5a; pointer-events: auto; }
+.dtw-request-notice button { white-space: nowrap; text-decoration: underline; }
+.dtw-row-action:hover { color: var(--dtw-text) !important; background: var(--dtw-hover); }
+.dtw-group { margin: 2px 0; }
+.dtw-group-head,.dtw-session { border-radius: 8px; transition: background-color 120ms ease; }
+.dtw-group-head { padding-right: 5px; }
+.dtw-group-head:hover,.dtw-group-head:focus-within,.dtw-session:hover,.dtw-session:focus-within,.dtw-session.active { background: var(--dtw-hover); }
+.dtw-group:has(.dtw-session.active):not(.dtw-unassigned) > .dtw-group-head { background: var(--dtw-hover); }
+.dtw-group-name { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 36px; text-align: left; padding: 8px 10px; border-radius: 8px; font-weight: 500 !important; }
+.dtw-group-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtw-folder-icon { position: relative; width: 18px; height: 18px; flex: 0 0 18px; }
+.dtw-folder-icon .dtw-icon { position: absolute; inset: 0; transition: opacity 120ms ease, transform 220ms ease; }
+.dtw-folder-closed,.dtw-folder-caret { opacity: 0; }
+.is-collapsed > .dtw-group-head .dtw-folder-closed { opacity: 1; }
+.is-collapsed > .dtw-group-head .dtw-folder-open { opacity: 0; }
+.dtw-folder-caret { transform: rotate(90deg); }
+.is-collapsed > .dtw-group-head .dtw-folder-caret { transform: rotate(0deg); }
+.dtw-group-name:hover .dtw-folder-caret,.dtw-group-name:focus-visible .dtw-folder-caret { opacity: 1; }
+.dtw-group-name:hover :is(.dtw-folder-open,.dtw-folder-closed),.dtw-group-name:focus-visible :is(.dtw-folder-open,.dtw-folder-closed) { opacity: 0; }
+.dtw-pinned { width: 12px; height: 12px; flex-basis: 12px; color: var(--dtw-muted); margin-left: auto; }
+.dtw-group-actions { display: flex; gap: 1px; }
+.dtw-group-actions,.dtw-session-menu,.dtw-tools > .dtw-row-action { opacity: 0; transition: opacity 120ms ease; }
+:is(.dtw-group-head,.dtw-session,.dtw-tools):hover :is(.dtw-group-actions,.dtw-session-menu,.dtw-row-action),:is(.dtw-group-head,.dtw-session,.dtw-tools):focus-within :is(.dtw-group-actions,.dtw-session-menu,.dtw-row-action),.dtw-row-action[aria-expanded="true"] { opacity: 1; }
+.dtw-group-head:has([aria-expanded="true"].dtw-row-action) .dtw-group-actions { opacity: 1; }
+.dtw-group-body { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 220ms cubic-bezier(.2,.7,.2,1), opacity 160ms ease; }
+.is-collapsed > .dtw-group-body,.dtw-group-body.is-collapsed { grid-template-rows: 0fr; opacity: 0; }
+.dtw-group-items { overflow: hidden; min-height: 0; }
+.dtw-session { position: relative; padding-right: 5px; color: var(--dtw-text); }
+.dtw-session > button:first-child { flex: 1; min-width: 0; min-height: 36px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 8px 8px 8px 36px; border-radius: 8px; }
+.dtw-unassigned { margin-top: 18px; }
+.dtw-unassigned .dtw-group-name { color: var(--dtw-muted); font-size: 13px; font-weight: 400 !important; gap: 5px; }
+.dtw-unassigned .dtw-group-head:hover { background: transparent; }
+.dtw-unassigned .dtw-session > button:first-child { padding-left: 10px; }
+.dtw-owned button:focus-visible { outline: 2px solid var(--dtw-accent); outline-offset: -2px; }
+.dtw-native-menu-source { display: block !important; position: fixed !important; left: var(--dtw-source-left) !important; top: var(--dtw-source-top) !important; width: var(--dtw-source-width) !important; height: var(--dtw-source-height) !important; visibility: hidden !important; pointer-events: none !important; }
+.dtw-native-menu-link,.dtw-native-menu-trigger { position: fixed !important; left: var(--dtw-source-left) !important; top: var(--dtw-source-top) !important; width: var(--dtw-source-width) !important; height: var(--dtw-source-height) !important; margin: 0 !important; }
+.dtw-menu,.dtw-menu-positioner { position: fixed !important; left: var(--dtw-menu-left) !important; top: var(--dtw-menu-top) !important; transform: none !important; max-height: calc(100vh - 16px); overflow-y: auto; z-index: 2147483001 !important; }
+.dtw-native-menu { max-height: calc(100vh - 16px); overflow-y: auto; visibility: visible !important; pointer-events: auto !important; }
+.dtw-menu { width: 224px; max-width: calc(100vw - 16px); padding: 6px; border: 1px solid var(--dtw-line); border-radius: 12px; background: var(--dtw-surface); box-shadow: 0 8px 28px #0003; pointer-events: auto; font-size: 14px; }
+.dtw-menu button,.dtw-menu-extras button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 8px 10px; border-radius: 7px; text-align: left; }
+.dtw-menu button span,.dtw-menu-extras button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtw-menu button:hover,.dtw-menu-extras button:hover,.dtw-menu button[aria-current="true"] { background: var(--dtw-hover); }
+.dtw-menu-divider { height: 1px; margin: 5px 6px; background: var(--dtw-line); }
+.dtw-menu-label { padding: 5px 10px; color: var(--dtw-muted); font-size: 12px; }
+.dtw-menu-extras { padding: 5px 0 0; margin-top: 5px; border-top: 1px solid var(--dtw-line); font-size: 14px; }
+@media (hover: none) { .dtw-group-actions,.dtw-session-menu,.dtw-tools > .dtw-row-action { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dtw-owned * { transition: none !important; } }
 .dtw-suggestion { margin: 6px 0; padding: 9px; border: 1px solid var(--dtw-line); border-radius: 9px; color: var(--dtw-text); }
 .dtw-suggestion > div { display: flex; gap: 5px; margin-top: 6px; }
 .dtw-suggestion button { color: var(--dtw-accent); padding: 3px 5px; }
@@ -28,15 +72,16 @@ body:not(.dark) .dtw-owned { --dtw-text: #272b34; --dtw-muted: #656e7b; --dtw-li
 body.dark .dtw-memory-button.dtw-native-state-fallback.is-on { color: #91a6ff !important; background: rgba(115,140,255,.16) !important; }
 .dtw-memory-button.dtw-native-state-fallback:not(.is-on) { color: inherit !important; background: transparent !important; box-shadow: none !important; }
 .dtw-memory-button.dtw-native-state-fallback:not(.is-on) svg { color: inherit !important; }
-.dtw-message-meta { margin-top: 6px; color: var(--dtw-muted); font-size: 11px; }
+.dtw-message-meta { margin-top: 6px; color: var(--dtw-muted); font-size: .85em; }
+.dtw-visible-memory { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--dtw-line); border-radius: 8px; color: var(--dtw-muted); font-size: .9em; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dtw-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); max-width: min(600px,90vw); padding: 9px 14px; border-radius: 9px; color: #fff; background: #20242b; box-shadow: 0 9px 30px rgba(0,0,0,.25); pointer-events: auto; }
 .dtw-toast[hidden] { display: none; }
 .dtw-modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.28); pointer-events: auto; }
 .dtw-dialog { width: min(360px,90vw); padding: 12px; border-radius: 14px; background: #24272c; color: #f4f5f8; box-shadow: 0 15px 50px rgba(0,0,0,.35); }
 body:not(.dark) .dtw-dialog { background: #fff; color: #222; }
 .dtw-dialog header { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px 9px; border-bottom: 1px solid rgba(128,128,128,.2); }
-.dtw-dialog button { color: inherit; background: transparent; border: 0; cursor: pointer; }
-.dtw-dialog header button { font-size: 20px; }
+.dtw-dialog button { color: inherit; font: inherit; background: transparent; border: 0; cursor: pointer; }
+.dtw-dialog header button { font-size: 1.4em; }
 .dtw-picker-list { display: grid; gap: 4px; max-height: 50vh; overflow: auto; padding-top: 8px; }
 .dtw-picker-list button { text-align: left; padding: 8px 10px; border-radius: 8px; }
 .dtw-picker-list button:hover { background: rgba(128,128,128,.15); }

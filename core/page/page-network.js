@@ -1,6 +1,6 @@
 /**
- * Runs in the page MAIN world. It only mutates one explicitly armed request
- * whose visible placeholder contains the matching request id.
+ * Runs in the page MAIN world. Rewrites armed requests and restores hidden
+ * background only for a matching native message edit.
  */
 (() => {
   "use strict";
@@ -18,6 +18,20 @@
   const TARGET_PATHS = ["/api/v0/chat/completion", "/api/v0/chat/edit_message"];
   let armedCommand = null;
   let memoryBlock = "";
+  let editContexts = [];
+  let accountId = "";
+  let accountObservedAtMs = 0;
+  let nativeAuthorization = "";
+  let requestState = {};
+  const profileWaiters = new Set();
+  const observedHistories = new Map();
+  window.addEventListener("dtw:request-state", (event) => { requestState = parseDetail(event) || {}; });
+  window.addEventListener("dtw:edit-context", (event) => {
+    const detail = parseDetail(event);
+    editContexts = (Array.isArray(detail?.contexts) ? detail.contexts : []).filter((entry) =>
+      typeof entry?.sessionId === "string" && /^[\w-]{1,100}$/.test(entry.sessionId)
+      && typeof entry.visible === "string" && typeof entry.prompt === "string" && entry.prompt.includes("<project_memory>"));
+  });
 
   window.addEventListener("dtw:memory-context", (event) => {
     const detail = parseDetail(event);
@@ -37,11 +51,16 @@
   }
 
   function isTargetUrl(url) {
-    return TARGET_PATHS.some((path) => String(url || "").includes(path));
+    return isDeepSeekApi(url) && TARGET_PATHS.some((path) => String(url || "").includes(path));
+  }
+  function isDeepSeekApi(url) {
+    try { const target = new URL(String(url), "https://chat.deepseek.com");
+      return target.origin === "https://chat.deepseek.com" && target.pathname.startsWith("/api/v0/");
+    } catch { return false; }
   }
 
   function shouldInspect(url, command) {
-    return isTargetUrl(url) || Boolean(command && String(url || "").includes("/api/v0/chat/"));
+    return isTargetUrl(url) || Boolean(command && isDeepSeekApi(url) && String(url || "").includes("/api/v0/chat/"));
   }
 
   function requestUrl(input) {
@@ -60,29 +79,95 @@
     if (sessions.length) emit("dtw:session-times", { sessions });
   }
 
-  function findAuthToken() {
+  function reportDeletedSessions(data, body) {
+    if (data?.code !== 0 || (data?.data?.biz_code != null && data.data.biz_code !== 0)) return;
     try {
-      for (let index = 0; index < localStorage.length; index += 1) {
-        const key = localStorage.key(index);
-        if (!key || !/token|auth|session/i.test(key)) continue;
-        const raw = localStorage.getItem(key);
-        if (!raw) continue;
-        if (raw.trim().startsWith("{")) {
+      const request = JSON.parse(typeof body === "string" ? body : "{}");
+      const sessionIds = Array.isArray(request.chat_session_ids)
+        ? request.chat_session_ids.filter((id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id)) : [];
+      if (sessionIds.length) emit("dtw:sessions-deleted", { sessionIds });
+    } catch { /* An unrecognized body must not change the local session list. */ }
+  }
+
+  function responseIssue(status, data) {
+    const text = [data?.msg, data?.message, data?.data?.biz_msg].filter(Boolean).join(" · ");
+    if ([401, 403].includes(status) || [401, 403, 40003].includes(Number(data?.code)) || /INVALID_TOKEN|UNAUTHORIZED|登录过期|未登录/i.test(text))
+      return { code: "AUTH_REQUIRED", message: "DeepSeek 登录已失效，插件请求已停止，请通过原生页面重新登录" };
+    if (/禁言|账号.*(?:封禁|限制)|account.*(?:suspend|ban)/i.test(text))
+      return { code: "ACCOUNT_RESTRICTED", message: text || "DeepSeek 账号受限，插件请求已停止" };
+    if (status === 429 || Number(data?.code) === 429 || Number(data?.data?.biz_code) === 429 || /请求.*频繁|too[ _-]?many|rate[ _-]?limit/i.test(text))
+      return { code: "RATE_LIMITED", message: "DeepSeek 请求受限，插件主动请求暂停 60 秒", untilMs: Date.now() + 60000 };
+    return null;
+  }
+  function reportIssue(issue) {
+    if (!issue) return;
+    if (issue.code === "RATE_LIMITED" && requestState.issue && requestState.issue.code !== "RATE_LIMITED") return;
+    issue.observedAtMs ||= Date.now();
+    if (issue.code === "AUTH_REQUIRED") { accountId = ""; nativeAuthorization = ""; observedHistories.clear(); }
+    requestState.issue = issue;
+    emit("dtw:request-issue", issue);
+    for (const requestId of profileWaiters) emit("dtw:profile-result", { requestId, accountId: "", ...issue });
+    profileWaiters.clear();
+  }
+  function requireRequest(detail) {
+    const issue = requestState.issue;
+    if (issue && (issue.code !== "RATE_LIMITED" || issue.untilMs > Date.now()))
+      throw Object.assign(new Error(issue.message), { code: issue.code });
+    if (requestState.paused && !requestState.allowCurrentTask)
+      throw Object.assign(new Error("插件主动请求已暂停"), { code: "PAUSED" });
+    if (!accountId || detail?.accountId && detail.accountId !== accountId)
+      throw Object.assign(new Error("尚未收到原生页面的有效账号信息，插件不会调用登录接口验证"), { code: "AUTH_REQUIRED" });
+  }
+  function observeResponse(url, status, data, authorization = "") {
+    if (!isDeepSeekApi(url)) return;
+    const issue = responseIssue(status, data);
+    if (issue) { reportIssue(issue); return; }
+    if (url.includes("/api/v0/users/current")) {
+      const user = data?.data?.biz_data?.user || data?.data?.biz_data;
+      const id = String(user?.id || user?.user_id || "");
+      if (status < 200 || status >= 300 || data?.code !== 0 || data?.data?.biz_code && data.data.biz_code !== 0 || !/^[\w-]{6,100}$/.test(id)) return;
+      if (accountId && accountId !== id) observedHistories.clear();
+      accountId = id; nativeAuthorization = authorization;
+      accountObservedAtMs = Date.now();
+      if (requestState.issue?.code === "AUTH_REQUIRED") requestState.issue = null;
+      emit("dtw:account-ready", { accountId, observedAtMs: accountObservedAtMs });
+      for (const requestId of profileWaiters) emit("dtw:profile-result", { requestId, accountId, observedAtMs: accountObservedAtMs });
+      profileWaiters.clear();
+      for (const [sessionId, history] of observedHistories) if (!nativeAuthorization || !history.authorization || history.authorization === nativeAuthorization)
+        emit("dtw:history-observed", { accountId, sessionId, data: history.data });
+      observedHistories.clear();
+    } else if (url.includes("/api/v0/chat/history_messages")) {
+      const sessionId = new URL(url, "https://chat.deepseek.com").searchParams.get("chat_session_id");
+      if (!sessionId) return;
+      if (accountId) {
+        if (nativeAuthorization && authorization && authorization !== nativeAuthorization) return;
+        emit("dtw:history-observed", { accountId, sessionId, data });
+      } else {
+        observedHistories.set(sessionId, { data, authorization });
+        if (observedHistories.size > 20) observedHistories.delete(observedHistories.keys().next().value);
+      }
+    } else if (url.includes("/api/v0/chat_session/fetch_page")) reportSessionTimes(data);
+  }
+  async function observeStreamError(response) {
+    const reader = response.clone().body?.getReader();
+    if (!reader) return;
+    try {
+      const decoder = new TextDecoder(); let buffer = ""; let size = 0;
+      while (size < 32768) {
+        const { done, value } = await reader.read(); if (done) break;
+        size += value.length; buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n"); buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
           try {
-            const value = JSON.parse(raw);
-            const token = value.token || value.accessToken || value.access_token || value.user_token || value.value || value.user?.token;
-            if (typeof token === "string" && token.length > 20) return token.replace(/^Bearer\s+/i, "");
-          } catch { /* Ignore unrelated storage values. */ }
-        } else if (/token/i.test(key) && raw.length > 20) {
-          return raw.replace(/^Bearer\s+/i, "").replace(/^"|"$/g, "");
+            const data = JSON.parse(line.slice(5));
+            if (data?.error || Number(data?.code) > 0 || Number(data?.data?.biz_code) > 0) {
+              const issue = responseIssue(response.status, data.error || data); if (issue) reportIssue(issue);
+            }
+          } catch { /* Stream text is not a status response. */ }
         }
       }
-      const cookie = document.cookie.split("; ")
-        .find((row) => /^(user_token|token)=/.test(row))?.split("=").slice(1).join("=");
-      return cookie ? decodeURIComponent(cookie).replace(/^Bearer\s+/i, "") : "";
-    } catch {
-      return "";
-    }
+    } finally { reader.cancel().catch(() => {}); }
   }
 
   function failCommand(error, requestId = armedCommand?.requestId || "") {
@@ -103,6 +188,7 @@
     const command = currentCommand();
     if (!command || !bodyText) return null;
     if (!bodyText.includes(command.marker)) return null;
+    if (command.operation === "automation") requireRequest({ accountId });
     let payload;
     try {
       payload = JSON.parse(bodyText);
@@ -144,11 +230,28 @@
     return JSON.stringify(injection.payload);
   }
 
+  function restoreEditBody(bodyText, url) {
+    if (!String(url).includes("/api/v0/chat/edit_message") || !editContexts.length) return null;
+    const payload = JSON.parse(bodyText);
+    const target = Core.resolvePromptTarget(payload);
+    if (!target) return null;
+    const context = editContexts.find((entry) => entry.sessionId === payload.chat_session_id
+      && (entry.messageId == null || entry.messageId === payload.message_id)
+      && entry.visible.trim() === target.get().trim());
+    if (!context) return null;
+    target.set(context.prompt);
+    return JSON.stringify(payload);
+  }
+
   window.addEventListener("dtw:network-arm", (event) => {
     const command = Core.normalizeCommand(parseDetail(event));
     if (!command) {
       emit("dtw:network-error", { requestId: "", error: "请求体改写指令不合法" });
       return;
+    }
+    if (command.operation === "automation" && requestState.issue) {
+      const issue = requestState.issue;
+      if (issue.code !== "RATE_LIMITED" || issue.untilMs > Date.now()) { emit("dtw:network-error", { requestId: command.requestId, code: issue.code, error: issue.message }); return; }
     }
     armedCommand = command;
     emit("dtw:network-armed", {
@@ -164,22 +267,32 @@
   });
 
   const originalFetch = window.fetch;
-  window.addEventListener("dtw:profile-request", async () => {
+  window.addEventListener("dtw:delete-request", async (event) => {
+    const detail = parseDetail(event);
+    const requestId = detail?.requestId;
     try {
-      const token = findAuthToken();
-      const response = await originalFetch.call(window, "/api/v0/users/current", {
-        credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      let data = await response.json();
-      if (token && data?.code === 40003) {
-        const retry = await originalFetch.call(window, "/api/v0/users/current", { credentials: "include" });
-        data = await retry.json();
-      }
-      const user = data?.data?.biz_data?.user || data?.data?.biz_data || {};
-      emit("dtw:profile-result", { accountId: String(user.id || user.user_id || "") });
-    } catch (error) {
-      emit("dtw:profile-result", { accountId: "", error: String(error?.message || error) });
-    }
+      const ids = detail?.sessionIds;
+      if (!requestId || !Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== "string" || !/^[\w-]{1,100}$/.test(id)))
+        throw new Error("删除会话参数不合法");
+      const headers = { "Content-Type": "application/json" };
+      requireRequest(detail);
+      if (nativeAuthorization) headers.Authorization = nativeAuthorization;
+      const body = JSON.stringify({ chat_session_ids: ids });
+      const response = await originalFetch.call(window, "/api/v0/chat_session/delete", {
+        method: "POST", credentials: "include", headers, body });
+      const result = await response.json().catch(() => null);
+      const issue = responseIssue(response.status, result);
+      if (issue) { reportIssue(issue); throw Object.assign(new Error(issue.message), { code: issue.code }); }
+      if (!response.ok || result?.code !== 0 || result?.data?.biz_code !== 0)
+        throw new Error(result?.data?.biz_msg || result?.msg || "DeepSeek 删除会话失败");
+      emit("dtw:delete-result", { requestId });
+    } catch (error) { emit("dtw:network-error", { requestId, code: error.code, error: String(error.message || error) }); }
+  });
+  window.addEventListener("dtw:profile-request", (event) => {
+    const requestId = parseDetail(event)?.requestId;
+    if (accountId) emit("dtw:profile-result", { requestId, accountId, observedAtMs: accountObservedAtMs });
+    else if (requestState.issue) emit("dtw:profile-result", { requestId, accountId: "", ...requestState.issue });
+    else if (requestId) profileWaiters.add(requestId);
   });
   window.addEventListener("dtw:history-request", async (event) => {
     const detail = parseDetail(event);
@@ -189,83 +302,61 @@
       emit("dtw:network-error", { requestId, error: "历史消息请求参数不合法" });
       return;
     }
-    const token = findAuthToken();
     try {
+      requireRequest(detail);
       const url = `/api/v0/chat/history_messages?chat_session_id=${encodeURIComponent(sessionId)}`;
-      const fetchHistory = (withToken) => {
-        const requestHeaders = new Headers({ Accept: "application/json", "Content-Type": "application/json" });
-        const bearer = withToken ? findAuthToken() : "";
-        if (bearer) requestHeaders.set("Authorization", `Bearer ${bearer}`);
-        return originalFetch.call(window, url, { method: "GET", headers: requestHeaders, credentials: "include" });
-      };
-      let response = await fetchHistory(true);
-      let data = await response.json().catch(() => null);
-      // DeepSeek wraps auth failures in HTTP 200 (code 40003 INVALID_TOKEN)
-      // while the cookie session stays valid — the localStorage bearer may be
-      // stale. Retry once with cookies only.
-      const authRejected = !response?.ok
-        || data?.code === 40003
-        || String(data?.msg || "").toUpperCase() === "INVALID_TOKEN"
-        || [401, 403].includes(Number(data?.code));
-      if (token && authRejected) {
-        response = await fetchHistory(false);
-        data = await response.json().catch(() => null);
-      }
+      const headers = new Headers({ Accept: "application/json" });
+      if (nativeAuthorization) headers.set("Authorization", nativeAuthorization);
+      const response = await originalFetch.call(window, url, { method: "GET", headers, credentials: "include" });
+      const data = await response.json().catch(() => null);
+      const issue = responseIssue(response.status, data);
+      if (issue) { reportIssue(issue); throw Object.assign(new Error(issue.message), { code: issue.code }); }
       if (!response?.ok) throw new Error(`DeepSeek 历史接口返回 HTTP ${response?.status || 0}`);
       emit("dtw:history-result", { requestId, sessionId, data });
     } catch (error) {
-      emit("dtw:network-error", { requestId, error: String(error?.message || error || "读取历史消息失败") });
+      emit("dtw:network-error", { requestId, code: error?.code, error: String(error?.message || error || "读取历史消息失败") });
     }
   });
-  window.addEventListener("dtw:session-times-request", async () => {
-    const token = findAuthToken();
-    for (const pinned of [false, true]) {
-      const url = `/api/v0/chat_session/fetch_page?lte_cursor.pinned=${pinned}`;
-      try {
-        const fetchPage = (withToken) => originalFetch.call(window, url, { credentials: "include",
-          headers: withToken && token ? { Authorization: `Bearer ${token}` } : {} });
-        let response = await fetchPage(true);
-        let data = await response.json().catch(() => null);
-        if (token && (!response.ok || data?.code === 40003)) {
-          response = await fetchPage(false);
-          data = await response.json().catch(() => null);
-        }
-        if (response.ok) reportSessionTimes(data);
-      } catch { /* Native sidebar requests can still provide the timestamps. */ }
-    }
-  });
-
   if (typeof originalFetch === "function") {
     window.fetch = async function dtwPatchedFetch(input, init) {
       const url = requestUrl(input);
+      const observe = (response) => {
+        if (!isDeepSeekApi(url) || typeof response?.clone !== "function") return response;
+        const authorization = new Headers(init?.headers || (input instanceof Request ? input.headers : {})).get("Authorization") || "";
+        if (response.headers?.get("content-type")?.includes("text/event-stream")) {
+          const issue = responseIssue(response.status, null); if (issue) reportIssue(issue);
+          else observeStreamError(response).catch(() => {});
+        } else response.clone().json().then((data) => observeResponse(url, response.status, data, authorization))
+          .catch(() => reportIssue(responseIssue(response.status, null)));
+        return response;
+      };
       if (url.includes("/api/v0/chat_session/fetch_page")) {
         const response = await originalFetch.apply(this, arguments);
-        response.clone().json().then(reportSessionTimes).catch(() => {});
-        return response;
+        return observe(response);
       }
       if (url.includes("/api/v0/chat_session/delete")) {
+        // Capture a Request body before fetch consumes it. Keep the original
+        // request and response untouched for the native application.
+        const body = typeof init?.body === "string" ? Promise.resolve(init.body)
+          : input instanceof Request && init?.body == null ? input.clone().text().catch(() => "") : Promise.resolve("");
         const response = await originalFetch.apply(this, arguments);
-        response.clone().json().then((body) => {
-          if (body?.code !== 0) return;
-          const request = JSON.parse(typeof init?.body === "string" ? init.body : "{}");
-          emit("dtw:sessions-deleted", { sessionIds: request.chat_session_ids || [] });
-        }).catch(() => {});
-        return response;
+        if (response.ok) Promise.all([response.clone().json(), body])
+          .then(([data, requestBody]) => reportDeletedSessions(data, requestBody)).catch(() => {});
+        return observe(response);
       }
       const command = currentCommand();
-      if (!shouldInspect(url, command)) return originalFetch.apply(this, arguments);
-      if (!command && !memoryBlock) return originalFetch.apply(this, arguments);
+      if (!shouldInspect(url, command)) return observe(await originalFetch.apply(this, arguments));
+      if (!command && !memoryBlock && !editContexts.length) return observe(await originalFetch.apply(this, arguments));
       const commandId = command?.requestId || "";
       let bodyText = "";
       try {
         if (typeof init?.body === "string") bodyText = init.body;
         else if (init?.body instanceof URLSearchParams) bodyText = init.body.toString();
         else if (input instanceof Request) bodyText = await input.clone().text();
-        if (!bodyText) return originalFetch.apply(this, arguments);
-        // Armed maintenance requests are rewritten, never injected; normal
-        // chat requests get the memory block when one was pushed.
-        const nextBody = command ? mutateBody(bodyText, url) : injectMemoryBody(bodyText, url);
-        if (!nextBody) return originalFetch.apply(this, arguments);
+        if (!bodyText) return originalFetch.apply(this, arguments).then(observe);
+        // Edits retain their original background; new messages never use an edit draft.
+        const nextBody = command ? mutateBody(bodyText, url) : restoreEditBody(bodyText, url) || injectMemoryBody(bodyText, url);
+        if (!nextBody) return originalFetch.apply(this, arguments).then(observe);
 
         const sourceHeaders = init?.headers || (input instanceof Request ? input.headers : undefined);
         const headers = new Headers(sourceHeaders || {});
@@ -285,41 +376,53 @@
           signal: init?.signal || (input instanceof Request ? input.signal : undefined),
         };
         const nextInput = input instanceof Request ? input.url : input;
-        return originalFetch.call(this, nextInput, nextInit);
+        return originalFetch.call(this, nextInput, nextInit).then(observe);
       } catch (error) {
         if (command) {
           failCommand(error, commandId);
           throw error;
         }
-        return originalFetch.apply(this, arguments);
+        return originalFetch.apply(this, arguments).then(observe);
       }
     };
   }
 
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
+  const originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+  if (originalSetHeader) XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    if (String(name).toLowerCase() === "authorization") this.__dtwAuthorization = value;
+    return originalSetHeader.apply(this, arguments);
+  };
   XMLHttpRequest.prototype.open = function dtwPatchedOpen(method, url) {
     this.__dtwRequestUrl = String(url || "");
+    this.__dtwAuthorization = "";
     return originalOpen.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function dtwPatchedSend(body) {
     const url = this.__dtwRequestUrl || "";
-    if (url.includes("/api/v0/chat_session/fetch_page")) {
+    if (isDeepSeekApi(url)) this.addEventListener("load", () => {
+      try { observeResponse(url, this.status, this.responseType === "json" ? this.response : JSON.parse(this.responseText), this.__dtwAuthorization || ""); }
+      catch { reportIssue(responseIssue(this.status, null)); }
+    }, { once: true });
+    if (url.includes("/api/v0/chat_session/delete")) {
       this.addEventListener("load", () => {
-        try { reportSessionTimes(this.responseType === "json" ? this.response : JSON.parse(this.responseText)); }
-        catch { /* Ignore unexpected native response formats. */ }
+        if (this.status < 200 || this.status >= 300) return;
+        try { reportDeletedSessions(this.responseType === "json" ? this.response : JSON.parse(this.responseText), body); }
+        catch { /* Ignore an unsuccessful or unrecognized native response. */ }
       }, { once: true });
       return originalSend.call(this, body);
     }
+    if (url.includes("/api/v0/chat_session/fetch_page")) return originalSend.call(this, body);
     const command = currentCommand();
     if (!shouldInspect(url, command)) return originalSend.call(this, body);
-    if (!command && !memoryBlock) return originalSend.call(this, body);
+    if (!command && !memoryBlock && !editContexts.length) return originalSend.call(this, body);
     const commandId = command?.requestId || "";
     try {
       const bodyText = typeof body === "string" ? body
         : body instanceof URLSearchParams ? body.toString() : "";
       if (!bodyText) return originalSend.call(this, body);
-      const nextBody = command ? mutateBody(bodyText, url) : injectMemoryBody(bodyText, url);
+      const nextBody = command ? mutateBody(bodyText, url) : restoreEditBody(bodyText, url) || injectMemoryBody(bodyText, url);
       return originalSend.call(this, nextBody || body);
     } catch (error) {
       if (command) {

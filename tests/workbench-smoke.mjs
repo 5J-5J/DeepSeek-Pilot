@@ -63,7 +63,7 @@ try {
   if (!extensionId) throw new Error("未获得扩展 ID");
   worker = await connect(workerTarget.webSocketDebuggerUrl); await worker.call("Runtime.enable");
   const stores = await evaluate(worker, "DTWDB.open().then(db => [...db.objectStoreNames])");
-  if (stores.length !== 8) throw new Error(`数据库表数错误：${stores.length}`);
+  if (stores.length !== 10 || !stores.includes("memoryTurns") || !stores.includes("memoryHistory")) throw new Error(`数据库表数错误：${stores.length}`);
   const pageState = await waitFor("工作台启动", () => evaluate(page,
     "(() => ({ loaded: Boolean(window.__dtwWorkbench), tree: Boolean(document.querySelector('.dtw-tree')), memoryButton: Boolean(document.querySelector('.dtw-memory-button')) }))()")
     .then((value) => value.loaded && value.tree && value.memoryButton ? value : null), 60000).catch(async () =>
@@ -75,8 +75,10 @@ try {
     options = await connect(optionTarget.webSocketDebuggerUrl); await options.call("Runtime.enable");
   }
   const optionsState = await waitFor("设置页加载", () => evaluate(options,
-    "(() => ({ title: document.title, managementLink: Boolean(document.querySelector('a[href*=" + JSON.stringify("manage.html") + "]')) }))()")
+    "(() => ({ title: document.title, memoryPanel: Boolean(document.querySelector('.settings-app > .memory-app #memories')), reviewTitle: [...document.querySelectorAll('.settings-app h2')].some((item) => item.textContent === '需要核对的任务'), obsoleteThreshold: Boolean(document.querySelector('#distillEveryTurns')) }))()")
     .then((value) => value.title ? value : null));
+  if (!optionsState.memoryPanel || !optionsState.reviewTitle || optionsState.obsoleteThreshold)
+    throw new Error("设置页没有完整显示设置、记忆管理或待核对任务");
   console.log(JSON.stringify({ ok: true, stores, page: pageState, accountReady, options: optionsState }, null, 2));
 } finally {
   options?.close(); worker?.close(); page?.close(); browser?.close();

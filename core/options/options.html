@@ -1,16 +1,28 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DeepSeek 项目工作台 · 设置</title><link rel="stylesheet" href="../ui.css"></head>
-<body><main class="page narrow"><header><div><h1>项目工作台</h1><p id="accountInfo">设置只影响当前 DeepSeek 账号</p></div><a id="openManage" class="primary" href="../manage/manage.html">管理记忆 ↗</a></header>
-<div id="notice" role="status"></div><section class="card"><h2>上下文预算</h2>
-<label>最大上下文预算 <select id="maxContextTokens"><option value="32000">精简 · 32,000 token</option><option value="64000" selected>适中 · 64,000 token</option><option value="128000">宽裕 · 128,000 token</option><option value="256000">很宽裕 · 256,000 token</option></select></label>
-<label>接续提醒比例 <select id="warningRatio"><option value="0.75">较早 · 75%</option><option value="0.85" selected>适中 · 85%</option><option value="0.95">较晚 · 95%</option></select></label>
-<label>为下一次回答预留 <select id="replyReserveTokens"><option value="2000">精简 · 2,000 token</option><option value="4000" selected>适中 · 4,000 token</option><option value="8000">宽裕 · 8,000 token</option></select></label>
-<p class="hint">没有 DSW token 数据时，会按正文长度估算接续时机；界面不会把估算写成 token 用量。</p></section>
-<section class="card"><h2>项目记忆</h2>
-<label class="check"><input id="memoryModeDefault" type="checkbox"> 新会话默认在发送时带入项目记忆</label>
-<label>每完成多少轮更新记忆 <select id="distillEveryTurns"></select></label>
-<p class="hint">已归项目的完整问答计入项目记忆；所有普通会话（含未归项目）计入个人记忆，自动化会话除外。达到轮数后自动发起整理会话，也可在管理页手动整理。“适中”默认每 5 轮。</p>
-<button id="save" class="primary">保存设置</button></section>
-<section class="card"><h2>归档项目</h2><div id="archived"></div></section>
-<section class="card"><h2>需要核对的作业</h2><div id="jobs"></div></section></main><script src="options.js"></script></body></html>
+<body class="settings-page"><div class="settings-app"><main class="page settings-panel">
+<header class="page-heading"><div><h1>设置</h1><p id="settingsAccountInfo">当前 DeepSeek 账号</p></div></header>
+<div id="settingsNotice" role="status"></div>
+<div id="automationAlert" class="automation-alert" role="alert" hidden><strong id="automationAlertTitle"></strong><p id="automationAlertDetail"></p><button id="viewIssues">查看未完成任务</button><button id="resumeRequests" hidden title="请先确认 DeepSeek 原生聊天已恢复正常。此操作只恢复插件任务，不调用登录接口。">已确认限制解除，恢复任务</button></div>
+<section class="card settings-section"><header class="section-heading"><h2>上下文预算</h2><button type="button" class="help-trigger" aria-label="上下文预算详情" data-help="没有 DeepSeek token 数据时，按正文长度估算接续时机。最大预算、提醒比例和回答预留共同决定什么时候提示接续；估算不会被显示成实际 token 用量。">i</button></header>
+<div class="setting-row"><label for="maxContextTokens">最大上下文</label><select id="maxContextTokens"><option value="32000">32,000 token</option><option value="64000" selected>64,000 · 默认</option><option value="128000">128,000 token</option><option value="256000">256,000 token</option></select></div>
+<div class="setting-row"><label for="warningRatio">接续提醒</label><select id="warningRatio"><option value="0.75">75% · 较早</option><option value="0.85" selected>85% · 默认</option><option value="0.95">95% · 较晚</option></select></div>
+<div class="setting-row"><label for="replyReserveTokens">回答预留</label><select id="replyReserveTokens"><option value="2000">2,000 token</option><option value="4000" selected>4,000 · 默认</option><option value="8000">8,000 token</option></select></div></section>
+<section class="card settings-section"><header class="section-heading"><h2>记忆更新</h2><button type="button" class="help-trigger" aria-label="记忆更新详情" data-help="开启新会话后，之前的普通会话按创建时间顺序更新记忆。旧会话变化后重新更新，并重放后续会话。个人与项目分别使用不同提示词，一次处理一个完整会话，支持追加、修改和删除。自动化会话除外，也可主动更新。">i</button></header>
+<div class="setting-row"><label for="memoryModeDefault">默认带入项目记忆</label><input id="memoryModeDefault" class="switch" type="checkbox" aria-label="新会话默认带入项目记忆"></div>
+<div class="setting-row"><div class="setting-label"><label for="memoryStartAtMs">起始时间</label><button type="button" class="help-trigger" aria-label="记忆起始时间详情" data-help="使用本机时区，默认是插件首次运行时间。只整理此时间及之后创建的普通会话，旧会话后来追加消息也不纳入。创建时间未知时暂不整理。修改时间立即生效并保留已有记忆；根据本地已保存的会话更新队列，不扫描远端历史。尚未保存的历史在用户打开会话时接收。">i</button></div><input id="memoryStartAtMs" type="datetime-local" step="1" required></div></section>
+<section class="card settings-section"><header class="section-heading"><h2>聊天显示</h2><button type="button" class="help-trigger" aria-label="聊天显示详情" data-help="这两个开关立即保存，仅控制聊天页面中自动追加记忆的显示，不影响实际发送给 DeepSeek 的内容。">i</button></header>
+<div class="setting-row"><label for="showPersonalMemory">显示个人记忆</label><input id="showPersonalMemory" class="switch" type="checkbox"></div>
+<div class="setting-row"><label for="showProjectMemory">显示项目记忆</label><input id="showProjectMemory" class="switch" type="checkbox"></div></section>
+<section class="card settings-section"><header class="section-heading"><h2>自动化队列</h2><button type="button" class="help-trigger" aria-label="自动化队列详情" data-help="归类、记忆整理、压缩和会话接续共用串行队列，一次只运行一个任务，切换账号也不会增加并发。任务失败后跳过，其他任务继续；未完成任务显示红色提醒，可主动重试或忽略。暂停同时停止新任务、后台补读和自动清理；当前任务完成收尾，正常聊天继续。登录失效或账号受限时停止主动请求；限流后全账号冷却 60 秒。归类和接续可调序，记忆按会话顺序执行；取消整理保留已有记忆，取消接续保留原草稿。">i</button></header>
+<div class="section-toolbar"><p id="queueSummary" role="status"></p><div class="actions"><button id="refreshQueue">刷新</button><button id="pauseQueue">暂停队列</button></div></div>
+<div id="automationQueue"></div><details class="history-details"><summary>最近完成或取消</summary><div id="queueHistory"></div></details></section>
+<section class="card settings-section"><header class="section-heading"><h2>需要核对的任务</h2><button type="button" class="help-trigger" aria-label="核对任务详情" data-help="发送或自动化结果不明时，先核对 DeepSeek 历史，再决定重试或忽略。原始草稿会保留。">i</button></header><div id="jobs"></div></section>
+<section class="card settings-section"><header class="section-heading"><h2>归档项目</h2></header><div id="archived"></div></section></main>
+<div class="memory-app"><aside><header><h1>记忆</h1></header><p id="accountInfo" class="muted"></p><nav id="scopes" aria-label="记忆范围"></nav><p id="sourceInfo" class="hint"></p></aside>
+<main><header class="memory-heading"><div><div class="title-line"><h2 id="scopeTitle">个人记忆</h2><button id="scopeDetails" class="help-trigger" type="button" aria-label="当前记忆详情" aria-describedby="scopeHint" data-help="正在读取记忆状态">i</button></div><p id="scopeSummary"></p></div>
+<div class="actions memory-toolbar"><button id="refresh">刷新</button><button id="distill" hidden>更新记忆</button><details class="menu"><summary>更多</summary><div class="menu-items"><button id="import">导入记忆</button><button id="export">导出记忆</button><button id="manageSelection" class="danger">批量删除</button></div></details></div></header>
+<div id="notice" role="status"></div><div class="memory-selection" hidden><label class="check"><input id="selectAll" type="checkbox"> 全选</label><span id="selectionCount" class="muted"></span><div class="actions"><button id="cancelSelection">完成</button><button id="deleteSelected" class="danger" disabled>删除所选（0）</button></div></div><div id="memories"></div></main></div></div>
+<dialog id="memoryEditor" class="memory-editor" aria-labelledby="memoryEditorTitle"><form id="memoryForm"><header class="section-heading"><h2 id="memoryEditorTitle">编辑类别</h2><button type="button" class="help-trigger" aria-label="类别编辑详情" data-help="每个输入框对应一条记忆，支持多行内容。在末尾空白框补充内容即可增加条目；清空原有条目会在保存时删除。该类别一次保存，其他类别不受影响。">i</button></header><div id="categoryEntries" class="category-editor-items"></div><div id="editorNotice" role="status"></div><div class="actions editor-footer"><button type="button" id="cancelEdit">取消</button><button id="saveCategory" type="submit" class="primary">保存类别</button></div></form></dialog>
+<input type="file" id="file" accept="application/json,.json" hidden><script src="../ui.js"></script><script src="options.js"></script><script src="../manage/manage.js"></script></body></html>

@@ -86,4 +86,21 @@ assert.deepEqual(globalThis.DTWHistory.sortSessionsNewestFirst([
   { sessionId: "active", updatedAtMs: 3000, lastMessageAtMs: 3000 },
 ]).map((entry) => entry.sessionId), ["active", "renamed"]);
 
-console.log(JSON.stringify({ ok: true, assertions: 25 }, null, 2));
+assert.throws(() => DTWHistory.parseHistoryResponse({ code: 0, data: {
+  biz_code: 100, biz_msg: "Chat session not found", biz_data: null,
+} }, sessionId), (error) => error.code === "SESSION_NOT_FOUND");
+assert.throws(() => DTWHistory.parseHistoryResponse({ code: 100, msg: "该会话不存在" }, sessionId),
+  (error) => error.code === "SESSION_NOT_FOUND");
+for (const msg of ["Session not found", "Session does not exist", "该会话已被删除"])
+  assert.throws(() => DTWHistory.parseHistoryResponse({ code: 100, msg }, sessionId), (error) => error.code === "SESSION_NOT_FOUND");
+for (const data of [
+  { code: 40003, msg: "INVALID_TOKEN", data: { biz_code: 100, biz_msg: "Chat session not found" } },
+  { code: 500, msg: "服务器繁忙" },
+  { code: 0, data: { biz_data: null } },
+]) assert.throws(() => DTWHistory.parseHistoryResponse(data, sessionId),
+  (error) => error.code !== "SESSION_NOT_FOUND");
+const empty = { code: 0, data: { biz_code: 0, biz_data: { chat_session: { id: sessionId }, chat_messages: [] } } };
+assert.equal(DTWHistory.parseHistoryResponse(empty, sessionId, { allowEmpty: true }).ok, true);
+assert.throws(() => DTWHistory.parseHistoryResponse(empty, sessionId), /没有返回可整理/);
+
+console.log(JSON.stringify({ ok: true, assertions: 32 }, null, 2));

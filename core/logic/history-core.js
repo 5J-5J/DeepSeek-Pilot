@@ -13,9 +13,24 @@
     return String(message?.content || "").trim();
   }
 
-  function parseHistoryResponse(data, expectedSessionId) {
+  function parseHistoryResponse(data, expectedSessionId, { allowEmpty = false } = {}) {
     const expected = String(expectedSessionId || "").replace(/[^a-zA-Z0-9_-]/g, "");
     if (!expected) throw new Error("缺少目标会话 ID");
+    const errorMessages = [data?.msg, data?.message, data?.data?.biz_msg, data?.data?.biz_message]
+      .filter((value) => typeof value === "string");
+    const authFailure = [401, 403, 40003].includes(Number(data?.code))
+      || errorMessages.some((value) => /INVALID_TOKEN|UNAUTHORIZED|未登录|登录过期/i.test(value));
+    // Only an explicit server error means deleted. Missing fields, empty
+    // histories, pagination and authentication failures are not evidence.
+    const failed = (data?.code != null && data.code !== 0)
+      || (data?.data?.biz_code != null && data.data.biz_code !== 0);
+    if (failed && !authFailure && errorMessages.some((value) =>
+      /(?:会话|对话)(?:不存在|已(?:被)?删除)|(?:CHAT_)?SESSION_(?:NOT_FOUND|NOT_EXIST)|(?:(?:chat\s+)?session|conversation)\s+(?:not\s+found|(?:does\s+not|doesn't)\s+exist)/i.test(value))) {
+      const error = new Error("该会话已不存在，已从插件列表移除");
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    if (failed) throw new Error(`DeepSeek 历史接口请求失败：${errorMessages.join(" · ") || "未知错误"}`);
     const bizData = data?.data?.biz_data;
     if (!bizData || typeof bizData !== "object") {
       throw new Error(`DeepSeek 历史接口响应缺少 biz_data：${JSON.stringify(data).slice(0, 200)}`);
@@ -26,7 +41,7 @@
     if (!Array.isArray(bizData.chat_messages)) throw new Error("DeepSeek 历史接口响应缺少消息数组");
 
     const seen = new Set();
-    const messages = [];
+    const parsedMessages = [];
     const records = [];
     for (const raw of bizData.chat_messages) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("DeepSeek 历史接口包含无效消息");
@@ -53,10 +68,10 @@
       });
       if (!text || seen.has(id)) continue;
       seen.add(id);
-      messages.push({ id, role, text, revision: 1 });
+      parsedMessages.push({ id, role, text, revision: 1 });
     }
-    if (!messages.length) throw new Error("DeepSeek 历史接口没有返回可整理的消息");
-    return { ok: true, conversationId: sessionId, messages, records,
+    if (!parsedMessages.length && !allowEmpty) throw new Error("DeepSeek 历史接口没有返回可整理的消息");
+    return { ok: true, conversationId: sessionId, messages: parsedMessages, records,
       currentMessageId: Number.isInteger(bizData.chat_session.current_message_id) ? bizData.chat_session.current_message_id : null,
       title: String(bizData.chat_session.title || ""),
       updatedAtMs: Number.isFinite(bizData.chat_session.updated_at) ? Math.round(bizData.chat_session.updated_at * 1000) : null,

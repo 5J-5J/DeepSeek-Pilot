@@ -10,7 +10,7 @@ const [coreSource, networkSource] = await Promise.all([
   readFile(path.join(here, "..", "core", "page", "page-network.js"), "utf8"),
 ]);
 
-class FakeXhr {
+class FakeXhr extends EventTarget {
   open(method, url) { this.method = method; this.url = url; }
   send(body) { this.sentBody = body; return "sent"; }
 }
@@ -18,6 +18,7 @@ class FakeXhr {
 const sent = [];
 const page = new EventTarget();
 page.fetch = async (input, init) => {
+  if (String(input).includes("users/current")) return new Response(JSON.stringify({ code: 0, data: { biz_data: { user: { id: "fixture-account" } } } }));
   sent.push({ input, init });
   return {
     ok: true,
@@ -136,6 +137,8 @@ assert.equal(appliedEvents[1].requestId, "req_xhr");
 const historyResult = new Promise((resolve) => {
   page.addEventListener("dtw:history-result", (event) => resolve(JSON.parse(event.detail)), { once: true });
 });
+await page.fetch("https://chat.deepseek.com/api/v0/users/current");
+await new Promise(resolve => setTimeout(resolve, 10));
 page.dispatchEvent(new CustomEvent("dtw:history-request", { detail: JSON.stringify({
   requestId: "history_1",
   sessionId: "session-1",
@@ -246,4 +249,37 @@ blockedXhr.send(JSON.stringify({ unknown: "[DTW:req_unknown_xhr]" }));
 assert.equal(blockedXhr.sentBody, undefined);
 assert.equal(errors.at(-1).requestId, "req_unknown_xhr");
 
-console.log(JSON.stringify({ ok: true, assertions: 37 }, null, 2));
+const hiddenEditPrompt = "<project_memory>\n## 个人记忆\n### 偏好\n1. 先给结论\n## 项目记忆：测试项目\n### 目标\n1. 完成文档\n</project_memory>\n\n<current_question>\n修改后的问题\n</current_question>";
+page.dispatchEvent(new CustomEvent("dtw:edit-context", { detail: JSON.stringify({ contexts: [{
+  sessionId: "edit-session", messageId: 1, visible: "修改后的问题", prompt: hiddenEditPrompt,
+}] }) }));
+const editBody = { chat_session_id: "edit-session", message_id: 1, prompt: "修改后的问题", ref_file_ids: ["file-1"], thinking_enabled: true };
+const editUrl = "https://chat.deepseek.com/api/v0/chat/edit_message";
+await page.fetch(editUrl, { method: "POST", body: JSON.stringify(editBody) });
+assert.deepEqual(JSON.parse(sent.at(-1).init.body), { ...editBody, prompt: hiddenEditPrompt });
+for (const [url, body] of [
+  ["https://chat.deepseek.com/api/v0/chat/completion", editBody],
+  [editUrl, { ...editBody, chat_session_id: "another-session" }],
+  [editUrl, { ...editBody, message_id: 3 }],
+  [editUrl, { ...editBody, prompt: "另一个问题" }],
+]) {
+  await page.fetch(url, { method: "POST", body: JSON.stringify(body) });
+  assert.deepEqual(JSON.parse(sent.at(-1).init.body), body, "编辑上下文只匹配对应会话、消息和可见草稿");
+}
+const editXhr = new FakeXhr();
+editXhr.open("POST", editUrl); editXhr.send(JSON.stringify(editBody));
+assert.equal(JSON.parse(editXhr.sentBody).prompt, hiddenEditPrompt);
+await page.fetch(new Request(editUrl, { method: "POST", body: JSON.stringify(editBody), headers: { "X-Test": "edit" } }));
+assert.equal(JSON.parse(sent.at(-1).init.body).prompt, hiddenEditPrompt);
+assert.equal(sent.at(-1).init.headers.get("X-Test"), "edit");
+const longEditPrompt = hiddenEditPrompt.replace("修改后的问题", "长问题".repeat(22000));
+page.dispatchEvent(new CustomEvent("dtw:edit-context", { detail: JSON.stringify({ contexts: [{
+  sessionId: "edit-session", messageId: 1, visible: "长问题".repeat(22000), prompt: longEditPrompt,
+}] }) }));
+await page.fetch(editUrl, { method: "POST", body: JSON.stringify({ ...editBody, prompt: "长问题".repeat(22000) }) });
+assert.equal(JSON.parse(sent.at(-1).init.body).prompt, longEditPrompt, "原生长编辑不能因整理任务的预算而丢失隐藏记忆");
+page.dispatchEvent(new CustomEvent("dtw:edit-context", { detail: JSON.stringify({ contexts: [] }) }));
+await page.fetch(editUrl, { method: "POST", body: JSON.stringify(editBody) });
+assert.deepEqual(JSON.parse(sent.at(-1).init.body), editBody, "关闭编辑后清除上下文");
+
+console.log(JSON.stringify({ ok: true, checks: "request mutation, memory injection and scoped edit-context restoration" }, null, 2));

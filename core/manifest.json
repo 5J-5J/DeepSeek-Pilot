@@ -21,8 +21,14 @@
   "content_scripts": [
     {
       "matches": ["https://chat.deepseek.com/*"],
+      "js": ["logic/request-body-core.js", "page/page-network.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://chat.deepseek.com/*"],
       "css": ["content/workbench.css"],
-      "js": ["logic/history-core.js", "content/workbench.js"],
+      "js": ["logic/history-core.js", "logic/memory-display.js", "content/workbench.js"],
       "run_at": "document_start"
     }
   ]
