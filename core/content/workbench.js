@@ -1,4 +1,4 @@
-/* global DTWHistory, DTWMemoryDisplay */
+/* global DTWHistory, DTWMemoryDisplay, DTWUI */
 (() => {
   "use strict";
   if (window.__dtwWorkbench) return;
@@ -184,6 +184,7 @@
       ${["USER", "AUTOMATION"].includes(session.purpose) ? `<button class="dtw-session-menu dtw-row-action" data-action="session-menu" data-id="${esc(session.sessionId)}" aria-label="${esc(session.title || "新会话")}的操作" aria-haspopup="menu">${icon("more")}</button>` : ""}
     </div>`).join("");
   }
+  let automationHelpButton = null;
   function renderTree() {
     const list = listContainer();
     if (!list || !state.snapshot) return;
@@ -193,9 +194,9 @@
     const all = state.snapshot.sessions.filter((item) => !item.deleted);
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
     const jobs = DTWHistory.sortSessionsNewestFirst(all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose))).slice(0, 10);
-    const groups = state.snapshot.projects.filter((item) => !item.systemKind || item.systemKind === "AUTOMATION")
+    const groups = state.snapshot.projects.filter((item) => !item.archived && (!item.systemKind || item.systemKind === "AUTOMATION"))
       .sort((a, b) => Number(Boolean(a.systemKind)) - Number(Boolean(b.systemKind))
-      || Number(Boolean(a.archived)) - Number(Boolean(b.archived)) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.name.localeCompare(b.name, "zh"))
+      || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.name.localeCompare(b.name, "zh"))
       .map((project) => ({ id: project.projectId, title: project.name,
       system: Boolean(project.systemKind), archived: Boolean(project.archived), pinned: Boolean(project.pinned),
       items: project.systemKind === "AUTOMATION" ? jobs : user.filter((item) => membership(item.sessionId)?.projectId === project.projectId) }));
@@ -214,13 +215,27 @@
         <button class="dtw-group-name" data-action="collapse" data-id="${esc(group.id)}" aria-expanded="${!collapsed}" title="${esc(group.title)} · ${group.items.length} 个会话">
           ${special ? "" : `<span class="dtw-folder-icon">${icon(group.archived ? "archive" : group.system ? "automation" : "folder", "dtw-folder-closed")}${icon(group.archived ? "archive" : group.system ? "automation" : "folderOpen", "dtw-folder-open")}${icon("chevron", "dtw-folder-caret")}</span>`}
           <span class="dtw-group-label">${esc(group.title)}</span>${group.pinned ? icon("pin", "dtw-pinned") : ""}${special ? icon("chevron", "dtw-section-caret") : ""}
-        </button>${special || group.system ? "" : `<div class="dtw-group-actions"><button class="dtw-row-action" data-action="project-menu" data-id="${esc(group.id)}" aria-label="${esc(group.title)}的操作" aria-haspopup="menu">${icon("more")}</button>${group.archived ? "" : `<button class="dtw-row-action" data-action="project-new-chat" data-id="${esc(group.id)}" title="在此项目新建会话" aria-label="在${esc(group.title)}新建会话">${icon("compose")}</button>`}</div>`}
+        </button>${group.system ? '<span class="dtw-automation-help"></span>' : special ? "" : `<div class="dtw-group-actions"><button class="dtw-row-action" data-action="project-menu" data-id="${esc(group.id)}" aria-label="${esc(group.title)}的操作" aria-haspopup="menu">${icon("more")}</button>${group.archived ? "" : `<button class="dtw-row-action" data-action="project-new-chat" data-id="${esc(group.id)}" title="在此项目新建会话" aria-label="在${esc(group.title)}新建会话">${icon("compose")}</button>`}</div>`}
         </div><div class="dtw-group-body" ${collapsed ? 'inert aria-hidden="true"' : 'aria-hidden="false"'}><div class="dtw-group-items">${sessionRows(group.items)}</div></div></section>`;
     };
+    const focusedHelp = document.activeElement === automationHelpButton;
+    if (automationHelpButton) document.getElementById(automationHelpButton.getAttribute("aria-describedby"))?.hidePopover();
     tree.innerHTML = `<div class="dtw-tools"><button class="dtw-section-title" data-action="collapse" data-id="__projects__" aria-expanded="${!state.collapsed.has("__projects__")}">项目${icon("chevron", "dtw-section-caret")}</button><button class="dtw-row-action" data-action="create-project" title="新建项目" aria-label="新建项目">${icon("plus")}</button><button class="dtw-row-action ${alertCount ? "has-alert" : ""}" data-action="open-options" title="${alertCount ? `${alertCount} 项问题需要处理` : "设置"}" aria-label="${alertCount ? `设置，${alertCount} 项问题需要处理` : "设置"}">${icon("settings")}${alertCount ? `<span class="dtw-alert-dot" aria-hidden="true"></span>` : ""}</button></div>
       <div class="dtw-projects dtw-group-body ${state.collapsed.has("__projects__") ? "is-collapsed" : ""}" ${state.collapsed.has("__projects__") ? 'inert aria-hidden="true"' : 'aria-hidden="false"'}><div class="dtw-group-items">
       ${suggestions.map((job) => `<div class="dtw-suggestion">建议新建「${esc(job.result.suggestedName)}」<div><button data-action="accept-suggestion" data-id="${esc(job.jobId)}">创建并移入</button><button data-action="reject-suggestion" data-id="${esc(job.jobId)}">忽略</button></div></div>`).join("")}
       ${groups.map(groupHtml).join("")}</div></div>${groupHtml(unassigned)}`;
+    const helpSlot = tree.querySelector(".dtw-automation-help");
+    if (helpSlot) {
+      if (!automationHelpButton) {
+        automationHelpButton = document.createElement("button");
+        automationHelpButton.type = "button"; automationHelpButton.className = "dtw-help-trigger";
+        automationHelpButton.textContent = "i"; automationHelpButton.setAttribute("aria-label", "自动化会话详情");
+        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的自动化会话。这些会话不参与普通会话的自动归类和记忆学习；可打开查看执行内容。仅展示最近 10 条，队列空闲时会清理更早的自动化会话。");
+        document.getElementById(automationHelpButton.getAttribute("aria-describedby")).classList.add("dtw-help-tip", "dtw-owned");
+      }
+      helpSlot.append(automationHelpButton);
+      if (focusedHelp) automationHelpButton.focus({ preventScroll: true });
+    }
     if (focused) [...tree.querySelectorAll("[data-action]")].find((button) => button.dataset.action === focused.action && button.dataset.id === focused.id)?.focus({ preventScroll: true });
     // Keep DSW's React nodes mounted so native navigation and menus still work.
     hideNativeSessions(list);

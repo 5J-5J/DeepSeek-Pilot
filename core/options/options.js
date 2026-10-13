@@ -127,12 +127,14 @@
     $("showPersonalMemory").checked = data.settings.showPersonalMemory;
     $("showProjectMemory").checked = data.settings.showProjectMemory;
     if (data.legacyMigration?.status === "error") notice(`旧版数据迁移失败：${data.legacyMigration.error}`, true);
-    const archived = data.projects.filter((project) => project.archived && !project.systemKind);
+    const archived = data.projects.filter((project) => project.archived && !project.systemKind)
+      .sort((a, b) => (b.updatedAtMs ?? b.createdAtMs ?? 0) - (a.updatedAtMs ?? a.createdAtMs ?? 0)
+        || a.name.localeCompare(b.name, "zh"));
     $("archived").replaceChildren(...archived.map((project) => {
       const row = document.createElement("div"); row.className = "row";
       const name = document.createElement("span"); name.textContent = project.name;
       const button = document.createElement("button"); button.textContent = "恢复";
-      button.onclick = async () => { try { await call("project-update", { projectId: project.projectId, archived: false }); await load(); } catch (error) { notice(error.message, true); } };
+      button.onclick = async () => { try { await call("project-update", { projectId: project.projectId, archived: false }); await load(); window.dispatchEvent(new Event("dtw-settings-changed")); } catch (error) { notice(error.message, true); } };
       row.append(name, button); return row;
     }));
     if (!archived.length) $("archived").textContent = "暂无归档项目";

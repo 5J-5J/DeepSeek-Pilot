@@ -28,7 +28,7 @@
     {
       "matches": ["https://chat.deepseek.com/*"],
       "css": ["content/workbench.css"],
-      "js": ["logic/history-core.js", "logic/memory-display.js", "content/workbench.js"],
+      "js": ["logic/history-core.js", "logic/memory-display.js", "ui.js", "content/workbench.js"],
       "run_at": "document_start"
     }
   ]

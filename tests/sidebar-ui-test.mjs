@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "dtw-sidebar-test-"));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const [source, css, historySource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js"]
+const [source, css, historySource, uiSource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js", "ui.js"]
   .map(file => fs.readFile(path.join(root, "core", file), "utf8")));
 const titles = ["设计IP流量展示图", "G6展示模板比较", "功能分析与架构设计", "梳理推理可视化需求", "未知IP负责人应用成果", "展开显示"];
 const html = `<!doctype html><html lang="zh"><head><meta charset="UTF-8"><style>
@@ -52,6 +52,17 @@ async function waitFor(label, get) {
 }
 const click = async (action, id = "") => evaluate(`document.querySelector('[data-action="${action}"][data-id="${id}"]').click()`);
 const group = 'document.querySelector(\'[data-group="p1"]\')';
+async function checkMenuPosition(selector, action, id) {
+  const bounds = await evaluate(`(()=>{
+    const menu=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+    const anchor=document.querySelector('[data-action="${action}"][data-id="${id}"]').getBoundingClientRect();
+    const left=Math.max(8,Math.min(anchor.left,innerWidth-menu.width-8));
+    const top=anchor.bottom+menu.height+14<=innerHeight?anchor.bottom+6:Math.max(8,anchor.top-menu.height-6);
+    return {left:menu.left,top:menu.top,expectedLeft:left,expectedTop:top,right:menu.right,bottom:menu.bottom,width:innerWidth,height:innerHeight};
+  })()`);
+  assert.ok(Math.abs(bounds.left-bounds.expectedLeft)<1&&Math.abs(bounds.top-bounds.expectedTop)<1, JSON.stringify(bounds));
+  assert.ok(bounds.left>=8&&bounds.right<=bounds.width-8&&bounds.top>=8&&bounds.bottom<=bounds.height-8, JSON.stringify(bounds));
+}
 let browser; let page;
 const chrome = spawn("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", [
   "--headless=new", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0",
@@ -83,6 +94,7 @@ try {
       return {ok:true};
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
+    ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
       globalThis.fixture={state,renderTree,toggleGroup,handleAction,syncNativeMenu,renderModal};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
@@ -92,8 +104,8 @@ try {
     fixture.state.accountId='sidebar-test-account';
     fixture.state.snapshot={projects:[{projectId:'p1',name:'ip_relation'},{projectId:'p2',name:'metafinger'},
       {projectId:'archived',name:'已归档项目',archived:true},{projectId:'auto',name:'自动化会话',systemKind:'AUTOMATION'}],
-      sessions:${JSON.stringify([...titles, "旅行计划", "读书笔记"].map((title, i) => ({ sessionId: `s${i + 1}`, title, purpose: "USER", updatedAtMs: 20 - i })))}.concat([{sessionId:'helper',title:'记忆整理',purpose:'AUTOMATION',updatedAtMs:1}]),
-      memberships:${JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ sessionId: `s${i + 1}`, projectId: i < 6 ? "p1" : null })))},settings:{},jobs:[]};
+      sessions:${JSON.stringify([...titles, "旅行计划", "读书笔记"].map((title, i) => ({ sessionId: `s${i + 1}`, title, purpose: "USER", updatedAtMs: 20 - i })))}.concat([{sessionId:'helper',title:'记忆整理',purpose:'AUTOMATION',updatedAtMs:1},{sessionId:'archived-session',title:'归档会话',purpose:'USER'}]),
+      memberships:${JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ sessionId: `s${i + 1}`, projectId: i < 6 ? "p1" : null })))}.concat([{sessionId:'archived-session',projectId:'archived'}]),settings:{},jobs:[]};
     document.querySelector('.new-chat').addEventListener('click',()=>{fixtureNewChats++;history.pushState(null,'','/a/chat');});
     document.querySelectorAll('.native-row').forEach(row=>{
       row.addEventListener('click',event=>event.preventDefault());
@@ -106,9 +118,9 @@ try {
         fixtureTriggerRect=event.currentTarget.getBoundingClientRect().toJSON();
         fixtureMenuTimer=setTimeout(()=>{
           const floating=document.createElement('div');floating.className='ds-floating-container';
-          floating.style.cssText='position:fixed;left:0;top:0;transform:translate(100px,60px)';
+          floating.style.cssText='position:fixed;left:0;top:0;transform:translate(100px,60px);translate:40px 30px';
           const menu=document.createElement('div');menu.className='ds-dropdown-menu';menu.setAttribute('role','menu');
-          menu.style.position='relative';
+          menu.style.cssText='position:absolute;left:52px;top:80px;transform:translate(90px,24px);translate:20px 10px;margin:12px';
           menu.innerHTML=['重命名','置顶','分享','删除'].map(label=>'<button class="ds-dropdown-menu-option '+(label==='删除'?'ds-dropdown-menu-option--error':'')+'" role="menuitem">'+label+'</button>').join('');
           menu.querySelectorAll('button').forEach(button=>button.onclick=()=>{fixtureNative.push(button.textContent);fixtureOpenTrigger=null;floating.remove();});
           floating.append(menu);document.body.append(floating);
@@ -121,7 +133,26 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session.active').length"), 1);
   assert.equal(await evaluate("document.querySelector('#native-history').style.display"), "none");
   assert.equal(await evaluate("document.querySelectorAll('.native-row').length"), 8, "原生节点保持挂载");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived]'))"), false, "聊天侧栏隐藏归档项目");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=archived-session]'))"), false, "归档会话不转入未归类");
+  assert.equal(await evaluate("fixture.state.snapshot.sessions.some(session=>session.sessionId==='archived-session')"), true, "隐藏归档项目不删除数据");
+  await evaluate("globalThis.fixtureHelp=document.querySelector('.dtw-help-trigger');fixtureHelp.focus()");
+  assert.equal(await evaluate("document.querySelector('.dtw-help-tip').matches(':popover-open')"), true);
+  assert.match(await evaluate("document.querySelector('.dtw-help-tip').textContent"), /归类、记忆整理和压缩/);
+  assert.match(await evaluate("document.querySelector('.dtw-help-tip').textContent"), /不参与.*记忆学习/);
+  await evaluate("fixtureHelp.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));fixtureHelp.blur()");
+  assert.equal(await evaluate("document.querySelector('.dtw-help-tip').matches(':popover-open')"), false);
+  const hintPoint = await evaluate("(()=>{const r=fixtureHelp.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+  await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",...hintPoint});
+  assert.equal(await evaluate("document.querySelector('.dtw-help-tip').matches(':popover-open')"), true);
+  assert.equal(await evaluate("(()=>{const r=document.querySelector('.dtw-help-tip').getBoundingClientRect();return r.left>=12&&r.right<=innerWidth-12&&r.top>=12&&r.bottom<=innerHeight-12})()"),true,'详情提示保持在窗口内');
+  await fs.mkdir(path.join(root,".live-fs"),{recursive:true});
+  const helpScreenshot=await page.call('Page.captureScreenshot',{format:'png',clip:{x:0,y:0,width:680,height:760,scale:1}});
+  await fs.writeFile(path.join(root,'.live-fs','sidebar-help.png'),Buffer.from(helpScreenshot.data,'base64'));
+  await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",x:500,y:0});
+  await waitFor("移开自动化详情提示",()=>evaluate("!document.querySelector('.dtw-help-tip').matches(':popover-open')"));
   await evaluate("fixture.state.snapshot.alerts={count:2};fixture.renderTree()");
+  assert.equal(await evaluate("fixtureHelp===document.querySelector('.dtw-help-trigger')&&document.querySelectorAll('.dtw-help-tip').length===1"), true, "刷新复用详情按钮和提示");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-action=\"open-options\"].has-alert .dtw-alert-dot'))"), true);
   assert.match(await evaluate("document.querySelector('[data-action=\"open-options\"]').getAttribute('aria-label')"), /2/);
   const height = await evaluate(`${group}.querySelector('.dtw-group-body').getBoundingClientRect().height`);
@@ -161,6 +192,7 @@ try {
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.ds-dropdown-menu > .ds-dropdown-menu-option')].map(button=>button.textContent)"), ["重命名", "置顶", "分享", "删除"]);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.ds-floating-container')).transform"), "none", "在原生浮层容器定位，避免叠加位移");
   assert.equal(await evaluate("Math.round(document.querySelector('.ds-dropdown-menu').getBoundingClientRect().left)"), await evaluate("Math.round(document.querySelector('[data-action=\"session-menu\"][data-id=\"s1\"]').getBoundingClientRect().left)"));
+  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
   assert.ok(await evaluate("fixtureTriggerRect.width") > 0, "隐藏原生触发器仍获得有效定位");
   assert.equal(await evaluate("document.querySelectorAll('.dtw-menu-extras').length"), 1);
   await evaluate("fixture.syncNativeMenu();fixture.syncNativeMenu()");
@@ -194,6 +226,7 @@ try {
   await waitFor("移到未归类", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=\"s1\"]'))"));
   await click("session-menu", "helper");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu [data-action=\"automation-unmark\"]'))"), true, "无可见原生行时保留插件菜单");
+  await checkMenuPosition(".dtw-menu","session-menu","helper");
   await evaluate("document.body.click()");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"), false);
   await click("project-new-chat", "p2");
@@ -212,9 +245,19 @@ try {
   await click("project-menu", "p2");
   const bounds = await evaluate("(()=>{const rect=document.querySelector('.dtw-menu').getBoundingClientRect();return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};})()");
   assert.ok(bounds.left >= 8 && bounds.right <= 372 && bounds.top >= 8 && bounds.bottom <= 372, JSON.stringify(bounds));
+  await evaluate("document.body.click();document.querySelector('[data-session=s7]').scrollIntoView({block:'center',behavior:'instant'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  await click("session-menu", "s7");
+  await waitFor("窄屏原生会话菜单",()=>evaluate("Boolean(document.querySelector('.dtw-native-menu'))"));
+  await checkMenuPosition(".ds-dropdown-menu","session-menu","s7");
   await evaluate("document.querySelector('.ds-scroll-area').dispatchEvent(new Event('scroll'))");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"), false, "滚动后关闭浮层");
-  console.log(JSON.stringify({ ok: true, checks: "continuous collapse, retained nodes, refresh stability, persisted state, native menu callbacks, move/remove, keyboard, themes, viewport and reduced motion" }));
+  assert.equal(await evaluate("fixture.state.nativeMenu===null"), true, "滚动后关闭原生会话菜单");
+  await click("project-menu","p2");await click("archive-project","p2");
+  await waitFor("归档后隐藏项目",()=>evaluate("!document.querySelector('[data-group=p2]')"));
+  assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
+  await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
+  console.log(JSON.stringify({ ok: true, checks: "sidebar hints, hidden archives, native menu coordinates, callbacks, collapse, themes and viewport" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();

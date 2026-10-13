@@ -77,7 +77,9 @@
   }
   function render() {
     const userProjects = data.projects.filter((project) => !project.systemKind)
-      .sort((a, b) => a.name.localeCompare(b.name, "zh"));
+      .sort((a, b) => Number(Boolean(a.archived)) - Number(Boolean(b.archived))
+        || (b.updatedAtMs ?? b.createdAtMs ?? 0) - (a.updatedAtMs ?? a.createdAtMs ?? 0)
+        || a.name.localeCompare(b.name, "zh"));
     if (projectId && !userProjects.some((project) => project.projectId === projectId)) { projectId = null; scope = "PERSONAL"; }
     $("accountInfo").textContent = `数据账号：${accountId} · ${userProjects.length} 个项目`;
     $("sourceInfo").textContent = data.legacyMigration?.status === "other-account"
@@ -85,12 +87,12 @@
       : data.legacyMigration?.status === "error" ? `旧版数据迁移失败：${data.legacyMigration.error}`
         : userProjects.length ? "" : "暂无项目";
     const scopes = [{ id: null, name: "个人记忆" }, ...userProjects
-      .map((project) => ({ id: project.projectId, name: project.name }))];
+      .map((project) => ({ id: project.projectId, name: project.name, archived: project.archived }))];
     $("scopes").replaceChildren(...scopes.map((item) => {
       const button = document.createElement("button");
       const count = item.id ? data.memories.filter((memory) => memory.scope === "PROJECT" && memory.projectId === item.id).length
         : data.memories.filter((memory) => memory.scope === "PERSONAL").length;
-      button.textContent = `${item.name}（${count}）`;
+      button.textContent = `${item.name}（${count}）${item.archived ? " · 已归档" : ""}`;
       button.className = item.id === projectId ? "selected" : "";
       button.onclick = () => { selectedIds.clear(); selectionMode = false; projectId = item.id; scope = item.id ? "PROJECT" : "PERSONAL"; render(); };
       return button;

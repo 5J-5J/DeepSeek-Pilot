@@ -76,6 +76,12 @@ ${backgroundSource}
   await evaluate(worker, `(async () => {
     await DTWDB.put('settings',{accountId:'ui-test-account',key:'automationPaused',value:true});
     await DTWDB.put('projects',{accountId:'ui-test-account',projectId:'project-ui',name:'界面测试项目',createdAtMs:Date.now(),updatedAtMs:Date.now()});
+    for (const project of [
+      {projectId:'active-old',name:'更早的正常项目',createdAtMs:1,updatedAtMs:2},
+      {projectId:'archived-old',name:'甲旧归档',archived:true,createdAtMs:1,updatedAtMs:10},
+      {projectId:'archived-new',name:'乙新归档',archived:true,createdAtMs:2,updatedAtMs:30},
+      {projectId:'archived-fallback',name:'丙按创建时间归档',archived:true,createdAtMs:20}])
+      await DTWDB.put('projects',{accountId:'ui-test-account',...project});
     for (const [memoryId,kind,content,scope,projectId] of [
       ['personal-a','资料','我是软件开发者','PERSONAL',null], ['personal-b','偏好','以后用中文回答','PERSONAL',null],
       ['project-a','目标','完成体验改进','PROJECT','project-ui']])
@@ -86,6 +92,16 @@ ${backgroundSource}
   })()`);
   await page.call("Page.reload");
   await waitFor("记忆分组", () => evaluate(page, "document.querySelectorAll('.memory-group').length === 5"));
+  assert.deepEqual(await evaluate(page, "[...document.querySelectorAll('#scopes button')].map(button=>button.textContent.split('（')[0])"),
+    ['个人记忆','界面测试项目','更早的正常项目','乙新归档','丙按创建时间归档','甲旧归档'], '记忆管理中归档项目置底，各组按更新时间从新到旧排序');
+  assert.equal(await evaluate(page, "[...document.querySelectorAll('#scopes button')].slice(-3).every(button=>button.textContent.endsWith('已归档'))"), true);
+  assert.deepEqual(await evaluate(page, "[...document.querySelectorAll('#archived .row span')].map(span=>span.textContent)"),
+    ['乙新归档','丙按创建时间归档','甲旧归档']);
+  await evaluate(page, "[...document.querySelectorAll('#scopes button')].find(button=>button.textContent.startsWith('乙新归档')).click()");
+  assert.equal(await evaluate(page, "document.querySelector('#scopeTitle').textContent"), '乙新归档', '归档项目的记忆仍可查看');
+  await evaluate(page, "document.querySelector('#scopes button').click()");
+  await evaluate(page, "[...document.querySelectorAll('#archived .row')].find(row=>row.textContent.startsWith('甲旧归档')).querySelector('button').click()");
+  await waitFor('恢复归档后同步记忆目录',()=>evaluate(page,"document.querySelectorAll('#scopes button')[1].textContent==='甲旧归档（0）'"));
   assert.equal(await evaluate(page, "document.querySelector('#memoryStartAtMs').value.length > 0"), true);
   assert.equal(await evaluate(page, "Boolean(document.querySelector('#distillEveryTurns'))"), false);
   assert.equal(await evaluate(page, "document.querySelector('#distill').hidden"), false, "没有待处理会话时仍保留主动更新入口");
