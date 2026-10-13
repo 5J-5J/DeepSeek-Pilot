@@ -206,6 +206,8 @@
       operation: mutation.operation,
       target: mutation.target,
       promptChars: mutation.promptChars,
+      sessionId: typeof payload.chat_session_id === "string" && /^[\w-]{1,100}$/.test(payload.chat_session_id)
+        ? payload.chat_session_id : "",
       url: String(url || ""),
     });
     return JSON.stringify(mutation.payload);

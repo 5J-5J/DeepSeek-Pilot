@@ -799,7 +799,8 @@
     if (!state.accountId || detail.accountId !== state.accountId) { state.observedHistories.set(detail.sessionId, detail); return; }
     try {
       const captured = DTWHistory.parseHistoryResponse(detail.data, detail.sessionId, { allowEmpty: true });
-      if (state.automationRunning && state.automationJobId && detail.sessionId === currentId())
+      if (state.automationRunning && state.automationJobId && detail.sessionId === currentId()
+        && (!state.automationSessionId || detail.sessionId === state.automationSessionId))
         await send("automation-progress", { jobId: state.automationJobId, phase: "WAITING_REPLY", automationSessionId: detail.sessionId });
       if (!state.snapshot?.sessions.some((session) => session.sessionId === detail.sessionId))
         await send("session-observe", { sessionId: detail.sessionId, loadedHistory: true, title: captured.title });
@@ -988,6 +989,7 @@
   async function runAutomation(message) {
     state.automationRunning = true;
     state.automationJobId = message.jobId;
+    state.automationSessionId = "";
     let command = null;
     try {
       const editor = await waitEditor();
@@ -997,44 +999,55 @@
       const applied = waitEvent("dtw:network-applied", command.requestId, 15000);
       applied.catch(() => {});
       setEditor(editor, command.marker);
-      await submit(editor); await applied;
-      await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY" });
+      await submit(editor);
+      const request = await applied;
+      state.automationSessionId = request.sessionId || currentId();
+      await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: state.automationSessionId });
       let lastActivity = Date.now(); let previousText = ""; let historySignature = "";
-      let lastHeartbeat = lastActivity; let lastHistoryCheck = 0; let reportedAutomationId = "";
+      let lastHeartbeat = lastActivity; let lastHistoryCheck = 0; let lastHistoryError = "";
+      let reportedAutomationId = state.automationSessionId;
       while (true) {
-        const route = currentId();
-        if (route && route !== reportedAutomationId) {
-          await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: route });
-          reportedAutomationId = route;
+        // Bind to the sent request's session, even if this tab changes routes or has no visible answer.
+        state.automationSessionId ||= currentId();
+        const sessionId = state.automationSessionId;
+        if (sessionId && sessionId !== reportedAutomationId) {
+          await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: sessionId });
+          reportedAutomationId = sessionId;
         }
         requireSendAllowed();
-        const nodes = messageNodes();
+        const onTargetPage = currentId() === sessionId;
+        const nodes = onTargetPage ? messageNodes() : [];
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
-        if (isGenerating() || text !== previousText) lastActivity = Date.now();
+        if (onTargetPage && (isGenerating() || text !== previousText)) lastActivity = Date.now();
         previousText = text;
         // History completion survives missing/changed DOM selectors and background-tab throttling.
-        if (route && Date.now() - lastHistoryCheck >= 30000) {
+        if (sessionId && Date.now() - lastHistoryCheck >= 30000) {
+          let raw = "";
           try {
-            const saved = state.lastHistory?.conversationId === route ? state.lastHistory : null;
+            const saved = state.lastHistory?.conversationId === sessionId ? state.lastHistory : null;
             const captured = saved?.records.some((entry) => entry.messageId === saved.currentMessageId && entry.role === "ASSISTANT" && entry.status === "FINISHED")
-              ? saved : await history(route, { allowEmpty: true });
+              ? saved : await history(sessionId, { allowEmpty: true });
+            lastHistoryError = "";
             const answer = captured.records.find((entry) => entry.messageId === captured.currentMessageId);
             const signature = JSON.stringify(answer || null);
             if (signature !== historySignature) { historySignature = signature; lastActivity = Date.now(); }
-            const raw = answer?.role === "ASSISTANT" && answer.status === "FINISHED"
+            raw = answer?.role === "ASSISTANT" && answer.status === "FINISHED"
               ? answer.fragments.filter((part) => part.type === "RESPONSE").map((part) => part.content).join("\n\n").trim() : "";
-            if (raw) {
-              await send("automation-result", { jobId: message.jobId, raw, automationSessionId: route }); return;
-            }
-          } catch (error) { if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED", "SESSION_NOT_FOUND"].includes(error.code)) throw error; }
+          } catch (error) {
+            if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED", "SESSION_NOT_FOUND"].includes(error.code)) throw error;
+            lastHistoryError = error.message;
+          }
           finally { lastHistoryCheck = Date.now(); }
+          if (raw) {
+            await send("automation-result", { jobId: message.jobId, raw, automationSessionId: sessionId }); return;
+          }
         }
         if (Date.now() - lastHeartbeat >= 30000) {
-          await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: route });
+          await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: sessionId });
           lastHeartbeat = Date.now();
         }
         if (Date.now() - lastActivity >= 600000)
-          throw new Error("DeepSeek 连续 10 分钟未显示生成状态或新增回复，且未确认历史中的回答已完成；请核对运行会话后重试");
+          throw new Error(`DeepSeek 连续 10 分钟未显示生成状态或新增回复，且未确认历史中的回答已完成；自动化会话：${sessionId || "尚未取得 ID"}${lastHistoryError ? `；历史读取失败：${lastHistoryError}` : ""}；请核对运行会话后重试`);
         await delay(5000);
       }
     } catch (error) {
@@ -1043,9 +1056,10 @@
         const editor = findEditor();
         if (editor && editorText(editor).trim() === command.marker) setEditor(editor, "");
       }
-      if (isGenerating()) document.querySelector('button[aria-label*="停止"], button[aria-label*="Stop"], button[title*="停止"]')?.click();
-      await send("automation-result", { jobId: message.jobId, error: error.message, automationSessionId: currentId() }).catch(() => {});
-    } finally { state.automationRunning = false; state.automationJobId = null; }
+      if (currentId() === state.automationSessionId && isGenerating())
+        document.querySelector('button[aria-label*="停止"], button[aria-label*="Stop"], button[title*="停止"]')?.click();
+      await send("automation-result", { jobId: message.jobId, error: error.message, automationSessionId: state.automationSessionId }).catch(() => {});
+    } finally { state.automationRunning = false; state.automationJobId = null; state.automationSessionId = ""; }
   }
   async function runRollover(message) {
     state.rolloverRunning = true;

@@ -29,7 +29,7 @@ The current version is **0.9.0, an early development release**, with these capab
 
 Automatic classification is currently disabled; assign chats manually. Memory is included only in the first message of regular chats. Project memory also requires a selected project and the switch enabled beforehand; enabling it later does not inject it retroactively. Display switches affect visibility, not memory transmission or learning.
 
-Periodic settings refreshes preserve text selections in unchanged content. Memory processing checks the page every 5 seconds and checks history completion at most once every 30 seconds. It keeps waiting while generation is active or content changes, and reports a stall only after 10 minutes without generation, content progress or confirmed completion. Auxiliary chats are registered as plugin chats when first identified so they do not trigger repeated processing of regular chats.
+Periodic settings refreshes preserve text selections in unchanged content. Memory processing obtains the auxiliary chat ID from the actual outgoing request, checks the page every 5 seconds and checks that specific chat's history completion at most once every 30 seconds, even without visible answer text. It keeps waiting while generation is active or content changes, and reports a stall only after 10 minutes without generation, content progress or confirmed completion, including the target chat and latest history-read error. Auxiliary chats are registered as plugin chats when first identified so they do not trigger repeated processing of regular chats.
 
 ## Installation
 

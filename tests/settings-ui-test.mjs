@@ -250,9 +250,9 @@ ${backgroundSource}
   const narrowShot = await page.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
   await fs.writeFile(path.join(root, ".live-fs", "settings-ui-narrow.png"), Buffer.from(narrowShot.data, "base64"));
   await page.call("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false });
+  await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
   await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
-  await delay(200);
-  assert.equal(await evaluate(page, "getComputedStyle(document.querySelector('#refresh')).backgroundColor"), "rgb(32, 35, 40)");
+  await waitFor("深色背景切换完成", () => evaluate(page, "getComputedStyle(document.querySelector('#refresh')).backgroundColor==='rgb(32, 35, 40)'"));
   const darkShot = await page.call("Page.captureScreenshot", { format: "png" });
   await fs.writeFile(path.join(root, ".live-fs", "settings-ui-dark.png"), Buffer.from(darkShot.data, "base64"));
   await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });

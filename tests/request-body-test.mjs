@@ -104,6 +104,7 @@ assert.equal(JSON.parse(sent[0].init.body).prompt, "通过 fetch 写入的完整
 assert.equal(sent[0].init.credentials, "include");
 assert.equal(new Headers(sent[0].init.headers).get("x-test"), "kept");
 assert.equal(appliedEvents[0].target, "prompt");
+assert.equal(appliedEvents[0].sessionId, "abc", "返回实际发送请求中的会话 ID，供自动化固定核对结果");
 
 page.dispatchEvent(new CustomEvent("dtw:network-arm", { detail: JSON.stringify({
   requestId: "req_guard",
@@ -133,6 +134,7 @@ xhr.open("POST", "https://chat.deepseek.com/api/v0/chat/completion");
 xhr.send(JSON.stringify({ prompt: "[DTW:req_xhr] visible placeholder" }));
 assert.equal(JSON.parse(xhr.sentBody).prompt, "通过 XHR 写入的完整提示");
 assert.equal(appliedEvents[1].requestId, "req_xhr");
+assert.equal(appliedEvents[1].sessionId, "", "请求未带会话 ID 时不猜测其它会话");
 
 const historyResult = new Promise((resolve) => {
   page.addEventListener("dtw:history-result", (event) => resolve(JSON.parse(event.detail)), { once: true });

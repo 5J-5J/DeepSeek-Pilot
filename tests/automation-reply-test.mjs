@@ -7,7 +7,8 @@ const source = await readFile(new URL("../core/content/workbench.js", import.met
 const startCall = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error));';
 assert.ok(source.includes(startCall));
 
-async function run({ finishAt = Infinity, generating = false, hiddenAnswer = false, historyError = null, changing = false } = {}) {
+async function run({ finishAt = Infinity, generating = false, hiddenAnswer = false, historyError = null, changing = false,
+  routeMode = "normal", appliedSessionId = "helper", cachedOther = false } = {}) {
   const started = 1000000;
   let clock = started;
   let submitted = false;
@@ -16,13 +17,16 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
   const answer = {};
   class Clock extends Date { static now() { return clock; } }
   const scenario = {
-    route: () => submitted ? "helper" : "",
+    route: () => !submitted || routeMode === "missing" ? ""
+      : routeMode === "switched" && clock - started >= 30000 ? "other" : "helper",
     nodes: () => submitted && !hiddenAnswer ? [answer] : [],
     text: () => clock - started >= finishAt ? raw : changing ? `partial ${clock}` : "partial",
     generating: () => generating && clock - started < finishAt,
     submit: () => { submitted = true; },
     sleep: async ms => { sleeps.push(ms); clock += ms; assert.ok(clock - started < 1800000, "任务应完成或报告停滞"); },
-    history: async () => {
+    applied: async () => ({ sessionId: appliedSessionId }),
+    history: async sessionId => {
+      assert.equal(sessionId, "helper", "始终读取本次请求的自动化会话，而非当前标签页地址");
       polls.push(clock - started);
       if (historyError) throw Object.assign(new Error("模拟历史请求失败"), { code: historyError });
       return { conversationId: "helper", currentMessageId: 2, records: [{ messageId: 2, role: "ASSISTANT",
@@ -44,7 +48,7 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
     currentId = scenario.route;
     waitEditor = async () => ({});
     arm = async () => ({ marker: "marker", requestId: "request" });
-    waitEvent = async () => ({});
+    waitEvent = scenario.applied;
     setEditor = () => {};
     submit = scenario.submit;
     messageNodes = scenario.nodes;
@@ -58,12 +62,16 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
     cancel = () => {};
     findEditor = () => null;
   `), context);
+  if (cachedOther) context.fixture.state.lastHistory = { conversationId: "other", currentMessageId: 8,
+    records: [{ messageId: 8, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "另一会话的回答" }] }] };
   await context.fixture.runAutomation({ jobId: "job", prompt: "模拟整理请求" });
   assert.equal(context.fixture.state.automationRunning, false);
   assert.equal(context.fixture.state.automationJobId, null);
+  assert.equal(context.fixture.state.automationSessionId, "");
   assert.ok(sleeps.every(ms => ms === 5000), "页面状态每 5 秒检查一次");
   assert.ok(polls.slice(1).every((elapsed, index) => elapsed - polls[index] >= 30000), "历史请求最多每 30 秒一次");
   assert.equal(requests.filter(request => request.type === "automation-result").length, 1);
+  assert.ok(requests.every(request => request.automationSessionId === "helper"), "进度和结果均绑定同一自动化会话");
   return requests.find(request => request.type === "automation-result");
 }
 
@@ -80,4 +88,12 @@ assert.match(result.error, /连续 10 分钟/);
 assert.ok(result.elapsed >= 600000);
 result = await run({ historyError: "AUTH_REQUIRED" });
 assert.equal(result.error, "模拟历史请求失败", "登录失效时停止检查而非反复请求");
+result = await run({ finishAt: 60000, hiddenAnswer: true, routeMode: "missing" });
+assert.equal(result.raw, '{"memories":[]}', "地址及 DOM 都未出现时仍使用发送请求的会话 ID 检查完成结果");
+result = await run({ finishAt: 120000, routeMode: "switched", cachedOther: true });
+assert.equal(result.raw, '{"memories":[]}', "切换地址后仍获取对应任务的结果，忽略其它会话的完成缓存");
+result = await run({ finishAt: 60000, appliedSessionId: "" });
+assert.equal(result.raw, '{"memories":[]}', "旧网络事件未提供 ID 时绑定首次出现的路由");
+result = await run({ historyError: "HTTP_ERROR" });
+assert.match(result.error, /自动化会话：helper.*历史读取失败：模拟历史请求失败/);
 console.log("Automation reply checks passed: slow generation, missing DOM, completion status, low-frequency polling and stalls.");
