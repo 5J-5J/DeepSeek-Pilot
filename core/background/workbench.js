@@ -524,7 +524,7 @@ async function observeHistory(accountId, message) {
       parentId: Number.isInteger(record.parentId) ? record.parentId : null, role: record.role,
       status: clean(record.status, 40), insertedAtMs: Number.isFinite(record.insertedAtMs) ? record.insertedAtMs : null,
       accumulatedTokenUsage: Number.isFinite(record.accumulatedTokenUsage) ? record.accumulatedTokenUsage : null,
-      fragments, originalInput, sentMemoryBlock: originalInput !== null ? previous?.sentMemoryBlock || null : null, seenAtMs: NOW() });
+      fragments, originalInput, seenAtMs: NOW() });
   }
   if (Number.isInteger(message.currentMessageId)) session.currentMessageId = message.currentMessageId;
   if (message.title) session.title = clean(message.title, 160);
@@ -611,10 +611,6 @@ const personalMemoryCharacters = (memories) => memories.reduce((total, memory) =
 async function enforcePersonalMemoryBudget(accountId) {
   const active = (await DB.all("memories", accountId)).filter((item) => item.scope === "PERSONAL" && item.state === "ACTIVE");
   if (personalMemoryCharacters(active) >= PERSONAL_MEMORY_CHARACTER_LIMIT) await enqueuePersonalCompression(accountId);
-  return selectPersonalMemory(active);
-}
-
-function selectPersonalMemory(active) {
   if (personalMemoryCharacters(active) <= PERSONAL_MEMORY_CHARACTER_LIMIT) return active;
   active.sort((a, b) => Number(b.pinnedByUser) - Number(a.pinnedByUser)
     || (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
@@ -1147,12 +1143,12 @@ async function toggleMemory(accountId, message) {
   return { ok: true, membership };
 }
 
-async function sendMemorySelection(accountId, project) {
-  const all = await DB.all("memories", accountId);
-  const personal = selectPersonalMemory(all.filter((entry) => entry.scope === "PERSONAL" && entry.state === "ACTIVE"));
-  const memories = all.filter((entry) => (!DB.validMemory || DB.validMemory(entry)) && entry.state === "ACTIVE"
+async function sendMemoryBlock(accountId, project) {
+  const personal = await enforcePersonalMemoryBudget(accountId);
+  const memories = (await DB.all("memories", accountId)).filter((entry) => (!DB.validMemory || DB.validMemory(entry)) && entry.state === "ACTIVE"
     && (entry.scope === "PERSONAL" ? personal.some((row) => row.memoryId === entry.memoryId)
       : entry.scope === "PROJECT" && project && entry.projectId === project.projectId));
+  if (!project && !memories.length) return "";
   memories.sort((a, b) => Number(b.scope === "PERSONAL") - Number(a.scope === "PERSONAL")
     || Number(b.pinnedByUser) - Number(a.pinnedByUser)
     || a.content.localeCompare(b.content, "zh") || a.memoryId.localeCompare(b.memoryId));
@@ -1176,81 +1172,25 @@ async function sendMemorySelection(accountId, project) {
     }).filter(Boolean);
     scopes.push(`## ${scope === "PERSONAL" ? "个人记忆" : `项目记忆：${project.name.replace(/\s+/g, " ")}`}\n${categories.join("\n\n")}`);
   }
-  const counts = { personalCount: selected.filter((entry) => entry.scope === "PERSONAL").length,
-    projectCount: selected.filter((entry) => entry.scope === "PROJECT").length, projectGoal: Boolean(project) };
-  if (!scopes.length) return { ...counts, block: "" };
+  if (!scopes.length) return "";
   const attached = [selected.some((entry) => entry.scope === "PERSONAL") && "个人记忆", project && `项目「${project.name}」的目标与记忆`].filter(Boolean).join("和");
-  return { ...counts, block: `<project_memory>\n以下附带${attached}，按“范围 → 类别 → 条目”整理，供本次会话参考。\n请结合这些背景资料回答下方的本轮问题，以用户当前明确要求为准。\n\n${scopes.join("\n\n")}\n</project_memory>` };
-}
-
-function attachedMemoryBlock(text) {
-  return String(text || "").match(/^\s*(?:继续项目「[^\n]+」的工作。[^\n]*\n)?(<project_memory>[\s\S]*?<\/project_memory>)/i)?.[1] || "";
-}
-
-async function sendMemoryContext(accountId, message) {
-  const sessionId = clean(message.sessionId, 100);
-  const session = sessionId && await DB.get("sessions", key(accountId, sessionId));
-  const membership = sessionId && await DB.get("memberships", key(accountId, sessionId));
-  const projectEnabled = sessionId ? Boolean(membership?.memoryModeEnabled)
-    : Boolean(message.newChatProjectId || message.newChatMemoryEnabled);
-  const projectId = membership?.projectId || (!sessionId && clean(message.newChatProjectId, 100)) || null;
-  const project = projectId ? await DB.get("projects", key(accountId, projectId)) : null;
-  const projectUnavailable = Boolean(projectId && (!project || project.archived || project.systemKind));
-  const firstMessage = !sessionId || Boolean(session?.historyObserved && !session.hasUserMessage
-    && session.currentMessageId == null && session.lastKnownMessageId == null);
-  const selection = firstMessage && (!session || session.purpose === "USER")
-    ? await sendMemorySelection(accountId, projectEnabled && !projectUnavailable ? project : null)
-    : { block: "", personalCount: 0, projectCount: 0, projectGoal: false };
-  const nextSelection = !firstMessage && session?.purpose === "USER" && projectEnabled && project && !projectUnavailable
-    ? await sendMemorySelection(accountId, project) : selection;
-  return { sessionId, session, membership, projectEnabled, projectId, project, projectUnavailable, firstMessage, selection, nextSelection };
-}
-
-async function memoryPreview(accountId, message) {
-  const ctx = await sendMemoryContext(accountId, message);
-  const { sessionId, session, projectEnabled, projectId, project, projectUnavailable, firstMessage, selection } = ctx;
-  let status = "UNKNOWN"; let block = "";
-  if (session && session.purpose !== "USER") status = "AUTOMATION";
-  else if (firstMessage) { status = "PENDING"; block = selection.block; }
-  else {
-    const branch = await currentBranch(accountId, sessionId);
-    const first = branch[0];
-    if (first?.role === "USER" && first.parentId === null) {
-      const text = (first.fragments || []).filter((fragment) => fragment.type === "REQUEST").map((fragment) => fragment.content).join("\n\n");
-      block = attachedMemoryBlock(text) || first.sentMemoryBlock || "";
-      if (text || block) status = block ? "APPLIED" : "NOT_APPLIED";
-    }
-    if (status === "UNKNOWN") {
-      const confirmed = (await DB.all("jobs", accountId)).find((job) => ["SEND", "ROLLOVER"].includes(job.type)
-        && job.targetSessionId === sessionId && job.result?.confirmed && job.firstMessage
-        && (!branch.length || first?.messageId === job.userMessageId));
-      if (confirmed) { block = attachedMemoryBlock(confirmed.payload); status = block ? "APPLIED" : "NOT_APPLIED"; }
-    }
-  }
-  const uncertain = (await DB.all("jobs", accountId)).some((job) => job.type === "SEND" && (job.sourceSessionId || "") === sessionId
-    && ["PENDING", "NEEDS_REVIEW"].includes(job.status));
-  if (status === "PENDING" && uncertain) { status = "UNKNOWN"; block = ""; }
-  return { ok: true, status, block, projectId, projectName: project?.name || "", projectEnabled,
-    attachedScopes: [/(?:^|\n)## 个人记忆|\[个人(?:\/|\])/.test(block) && "个人记忆",
-      /(?:^|\n)## 项目记忆：|\[(?!个人(?:\/|\]))[^\]]+\/[^\]]+\]/.test(block) && "项目背景"].filter(Boolean),
-    nextSelection: !firstMessage && status !== "AUTOMATION" ? ctx.nextSelection : null,
-    chooseProject: projectEnabled && !projectId, projectUnavailable,
-    ...(status === "PENDING" ? selection : {}),
-    revision: JSON.stringify([sessionId, firstMessage, projectEnabled, projectId, projectUnavailable, selection.block]),
-    rolloverRevision: JSON.stringify([sessionId, projectEnabled, projectId, projectUnavailable, ctx.nextSelection.block]) };
+  return `<project_memory>\n以下附带${attached}，按“范围 → 类别 → 条目”整理，供本次会话参考。\n请结合这些背景资料回答下方的本轮问题，以用户当前明确要求为准。\n\n${scopes.join("\n\n")}\n</project_memory>`;
 }
 
 async function prepareSend(accountId, message, sender) {
-  const ctx = await sendMemoryContext(accountId, message);
-  const { sessionId, session, membership, projectEnabled, projectId, projectUnavailable, firstMessage, selection } = ctx;
+  const sessionId = clean(message.sessionId, 100);
+  const session = sessionId && await DB.get("sessions", key(accountId, sessionId));
   if (session && session.purpose !== "USER") return { ok: true, native: true };
+  const membership = await DB.get("memberships", key(accountId, sessionId));
+  const newChatProjectId = !sessionId ? clean(message.newChatProjectId, 100) : "";
+  const projectEnabled = Boolean(membership?.memoryModeEnabled || newChatProjectId);
+  const projectId = projectEnabled ? membership?.projectId || newChatProjectId : null;
   if (projectEnabled && !projectId) return { ok: true, chooseProject: true };
-  if (projectEnabled && projectUnavailable) throw new Error("项目不可用，请重新选择项目");
-  const project = projectEnabled ? ctx.project : null;
-  const revision = JSON.stringify([sessionId, firstMessage, projectEnabled, projectId, projectUnavailable, selection.block]);
-  if (message.previewRevision && message.previewRevision !== revision)
-    return { ok: true, previewChanged: true, preview: await memoryPreview(accountId, message) };
-  const block = selection.block;
+  const project = projectId ? await DB.get("projects", key(accountId, projectId)) : null;
+  if (projectId && (!project || project.archived || project.systemKind)) throw new Error("项目不可用，请重新选择项目");
+  const firstMessage = !sessionId || Boolean(session?.historyObserved && !session.hasUserMessage
+    && session.currentMessageId == null && session.lastKnownMessageId == null);
+  const block = firstMessage ? await sendMemoryBlock(accountId, project) : "";
   if (!block && !project) return { ok: true, native: true };
   const rawInput = String(message.rawInput ?? "").trim();
   if (!rawInput) throw new Error("输入为空");
@@ -1259,20 +1199,16 @@ async function prepareSend(accountId, message, sender) {
   const cfg = await settings(accountId);
   const estimated = tip?.accumulatedTokenUsage ?? Math.ceil(branch.reduce((sum, entry) => sum + messageText(entry).length, 0) / 2);
   const needsRollover = Boolean(project && sessionId) && estimated + Math.ceil((block.length + rawInput.length) / 2) + cfg.replyReserveTokens >= cfg.maxContextTokens * cfg.warningRatio;
-  if (needsRollover && message.rolloverPreviewRevision
-    && message.rolloverPreviewRevision !== JSON.stringify([sessionId, projectEnabled, projectId, projectUnavailable, ctx.nextSelection.block]))
-    return { ok: true, previewChanged: true, preview: await memoryPreview(accountId, message) };
   if (!block && !needsRollover) return { ok: true, native: true };
   if (rawInput.length > 30000) throw new Error("输入超过记忆注入当前支持的 30000 字符，请缩短后发送");
   const job = { accountId, jobId: ID(), type: needsRollover ? "ROLLOVER" : "SEND", status: "PENDING",
     sourceSessionId: sessionId || null, targetSessionId: null, automationSessionId: null, projectId: project?.projectId || null,
     sendId: ID(), rawInput, payload: null, inputVersion: membership?.version ?? null, result: null,
-    firstMessage: firstMessage || needsRollover,
     sourceTabId: sender.tab?.id || null, createdAtMs: NOW(), updatedAtMs: NOW() };
   await DB.put("jobs", job);
   await drainJobQueue();
   if (needsRollover) {
-    const rolloverBlock = ctx.nextSelection.block;
+    const rolloverBlock = await sendMemoryBlock(accountId, project);
     const recent = branch.slice(-8).map((entry) => `${entry.role === "USER" ? "用户" : "助手"}: ${messageText(entry).slice(0, 1200)}`).join("\n");
     const prompt = `${rolloverBlock}\n\n<recent_progress>\n${recent}\n</recent_progress>\n\n<current_question>\n${rawInput}\n</current_question>`;
     job.payload = prompt; await DB.put("jobs", job);
@@ -1292,13 +1228,11 @@ async function sendStatus(accountId, message) {
   if (message.confirmed && message.sessionId) {
     const target = clean(message.sessionId, 100);
     job.targetSessionId = target; job.status = "DONE"; job.result = { confirmed: true };
-    job.userMessageId = Number.isInteger(message.userMessageId) ? message.userMessageId : null;
     if (job.type === "ROLLOVER" && message.waitForReply) { job.status = "RUNNING"; job.phase = "WAITING_REPLY"; }
     if (Number.isInteger(message.userMessageId) && job.rawInput) {
       const previous = await DB.get("messages", [accountId, target, message.userMessageId]);
       await DB.put("messages", { ...previous, accountId, sessionId: target,
         messageId: message.userMessageId, originalInput: job.rawInput,
-        sentMemoryBlock: attachedMemoryBlock(job.payload),
         role: "USER", fragments: previous?.fragments || [], seenAtMs: NOW() });
     }
     if (job.type === "SEND" && !job.sourceSessionId) {
@@ -1429,7 +1363,6 @@ const handlers = {
   "memory-delete-batch": (a, m) => mutateMemories(a, () => memoryDeleteBatch(a, m)),
   "memory-save-category": (a, m) => mutateMemories(a, () => memorySaveCategory(a, m)),
   "memory-toggle": toggleMemory,
-  "memory-preview": memoryPreview,
   "memory-job-retry": (a, m) => mutateMemories(a, () => retryMemoryJob(a, m)),
   "memory-distill-current": distillCurrent,
   "memory-distill-project": distillProjectManual,

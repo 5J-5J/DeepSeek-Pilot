@@ -35,7 +35,6 @@ vm.runInContext(source.replace(end, `
   doProjectSend = async (_editor, prompt) => recordSend(prompt);
   submit = async () => recordNative();
   showToast = message => fixture.toasts.push(message);
-  renderMemoryButton = () => {};
 `), context);
 Object.assign(context.fixture.state, { accountId: "account123", snapshot: {
   settings: { memoryModeDefault: false, showPersonalMemory: false, showProjectMemory: false },

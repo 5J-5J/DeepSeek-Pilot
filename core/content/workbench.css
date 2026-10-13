@@ -80,12 +80,6 @@ body.dark .dtw-memory-button.dtw-native-state-fallback.is-on { color: #91a6ff !i
 .dtw-memory-button.dtw-native-state-fallback:not(.is-on) svg { color: inherit !important; }
 .dtw-message-meta { margin-top: 6px; color: var(--dtw-muted); font-size: .85em; }
 .dtw-visible-memory { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--dtw-line); border-radius: 8px; color: var(--dtw-muted); font-size: .9em; white-space: pre-wrap; overflow-wrap: anywhere; }
-.dtw-memory-status { margin: 6px 0; padding: 4px 8px; font-size: 12px; overflow-wrap: anywhere; }
-.dtw-memory-note { color: var(--dtw-muted); margin: 3px 0; }
-.dtw-memory-status button { color: var(--dtw-accent); padding: 3px 0; }
-.dtw-memory-history { margin: 6px 0; color: var(--dtw-muted); font-size: 12px; }
-.dtw-memory-status summary,.dtw-memory-history summary { cursor: pointer; }
-.dtw-memory-status pre,.dtw-memory-history pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 8px; border: 1px solid var(--dtw-line); border-radius: 8px; }
 .dtw-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); max-width: min(600px,90vw); padding: 9px 14px; border-radius: 9px; color: #fff; background: #20242b; box-shadow: 0 9px 30px rgba(0,0,0,.25); pointer-events: auto; }
 .dtw-toast[hidden] { display: none; }
 .dtw-modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.28); pointer-events: auto; }
