@@ -240,7 +240,11 @@
     // Keep DSW's React nodes mounted so native navigation and menus still work.
     hideNativeSessions(list);
     if (state.menu && !state.menu.anchor.isConnected) closeMenu();
-    if (state.nativeMenu && !state.nativeMenu.anchor.isConnected) closeNativeMenu(true);
+    if (state.nativeMenu && !state.nativeMenu.anchor.isConnected) {
+      const anchor = [...tree.querySelectorAll(".dtw-session-menu")].find((node) => node.dataset.id === state.nativeMenu.id);
+      if (anchor) { state.nativeMenu.anchor = anchor; anchor.setAttribute("aria-expanded", "true"); syncNativeMenu(); }
+      else closeNativeMenu(true);
+    }
   }
   function toggleGroup(id, collapsed = !state.collapsed.has(id)) {
     closeMenu(); closeNativeMenu(true);
@@ -1034,8 +1038,9 @@
     if (!current) return;
     state.nativeMenu = null;
     clearTimeout(current.timer);
+    current.observer?.disconnect();
     // DeepSeek closes this dropdown by toggling its trigger, not by synthetic Escape.
-    if (dismiss) current.trigger.click();
+    if (dismiss && (!current.menu || current.menu.isConnected && current.menu.getBoundingClientRect().height > 0)) current.trigger.click();
     current.menu?.querySelector(".dtw-menu-extras")?.remove();
     current.menu?.classList.remove("dtw-native-menu");
     current.positioner?.classList.remove("dtw-menu-positioner");
@@ -1077,7 +1082,7 @@
   function syncNativeMenu() {
     const current = state.nativeMenu;
     if (!current) return;
-    const menu = [...document.querySelectorAll(".ds-dropdown-menu")].find((node) => !root.contains(node)
+    const menu = [...document.querySelectorAll('.ds-dropdown-menu, [role="menu"]')].find((node) => !root.contains(node)
       && node.getBoundingClientRect().height > 0 && /重命名|删除|分享|rename|delete|share/i.test(node.textContent));
     if (!menu) { if (current.menu) closeNativeMenu(); return; }
     if (current.menu !== menu) {
@@ -1106,9 +1111,13 @@
     const sources = [[source, "dtw-native-menu-source"], [link, "dtw-native-menu-link"], [trigger, "dtw-native-menu-trigger"]];
     for (const [node, className] of sources) node.classList.add(className);
     anchor.setAttribute("aria-expanded", "true");
-    const current = state.nativeMenu = { id, anchor, source, sources, trigger, menu: null, positioner: null, timer: 0 };
+    const current = state.nativeMenu = { id, anchor, source, sources, trigger, menu: null, positioner: null, timer: 0,
+      observer: new MutationObserver(syncNativeMenu) };
+    // Native dropdowns can be mounted hidden, then opened by changing styles only.
+    current.observer.observe(document.body, { childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ["style", "class", "hidden", "data-state", "role"] });
     current.timer = setTimeout(() => {
-      if (state.nativeMenu === current && !current.menu) { closeNativeMenu(true); openMenu("session", id, anchor); }
+      if (state.nativeMenu === current && !current.menu) { closeNativeMenu(true); openMenu("session", id, current.anchor); }
     }, 800);
     trigger.click(); syncNativeMenu();
   }
@@ -1154,6 +1163,7 @@
         }
       }
       if (action === "session-menu") {
+        syncNativeMenu();
         if (state.nativeMenu?.id === id) closeNativeMenu(true);
         else if (state.menu?.kind === "session" && state.menu.id === id) closeMenu(true);
         else openSessionMenu(id, button);
@@ -1264,6 +1274,10 @@
       }
     } catch (error) { showToast(error.message, 5000); }
   }
+  document.addEventListener("pointerdown", (event) => {
+    // Keep native outside-click handlers from closing the dropdown before our toggle runs.
+    if (event.target.closest?.(".dtw-session-menu")?.closest(".dtw-tree")) event.stopImmediatePropagation();
+  }, true);
   document.addEventListener("click", (event) => {
     const memoryButton = event.target.closest?.(".dtw-memory-button");
     if (memoryButton) {

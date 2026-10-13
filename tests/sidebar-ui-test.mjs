@@ -51,6 +51,12 @@ async function waitFor(label, get) {
   throw new Error(`${label}超时`);
 }
 const click = async (action, id = "") => evaluate(`document.querySelector('[data-action="${action}"][data-id="${id}"]').click()`);
+const pointerClick = async (action, id) => {
+  const point = await evaluate(`(()=>{const button=document.querySelector('[data-action="${action}"][data-id="${id}"]');button.scrollIntoView({block:'nearest'});const rect=button.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};})()`);
+  await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",...point});
+  await page.call("Input.dispatchMouseEvent", {type:"mousePressed",button:"left",clickCount:1,...point});
+  await page.call("Input.dispatchMouseEvent", {type:"mouseReleased",button:"left",clickCount:1,...point});
+};
 const group = 'document.querySelector(\'[data-group="p1"]\')';
 async function checkMenuPosition(selector, action, id) {
   const bounds = await evaluate(`(()=>{
@@ -96,7 +102,7 @@ try {
     ${historySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
-      globalThis.fixture={state,renderTree,toggleGroup,handleAction,syncNativeMenu,renderModal};
+      globalThis.fixture={state,renderTree,toggleGroup,handleAction,syncNativeMenu,closeNativeMenu,renderModal};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -205,6 +211,49 @@ try {
   assert.deepEqual(await evaluate("fixtureNative"), ["重命名"], "原生操作继续调用原生事件");
   assert.equal(await evaluate("document.querySelector('#native-history').classList.contains('dtw-native-menu-source')"), false);
   assert.equal(await evaluate("document.querySelector('#native-history').style.display"), "none");
+  await evaluate(`globalThis.fixtureAlternateMenu=null;
+    const trigger=document.querySelector('.native-row[href$="s2"] button');
+    trigger.addEventListener('click',event=>{
+      event.preventDefault();event.stopImmediatePropagation();
+      if(fixtureAlternateMenu){fixtureAlternateMenu.remove();fixtureAlternateMenu=null;return;}
+      const menu=document.createElement('div');menu.className='native-session-dropdown';menu.setAttribute('role','menu');
+      menu.style.cssText='display:none;position:fixed;left:0;top:0;width:210px;background:#252525';
+      menu.innerHTML='<button role="menuitem">重命名</button><button role="menuitem">置顶</button><button role="menuitem">分享</button><button role="menuitem">删除</button>';
+      document.body.append(menu);fixtureAlternateMenu=menu;
+      setTimeout(()=>{if(menu.isConnected)menu.style.display='block';},25);
+    },true);`);
+  await pointerClick("session-menu","s2");
+  await evaluate("fixture.state.snapshot.sessions.find(session=>session.sessionId==='s2').title='首次点击期间标题更新';fixture.renderTree()");
+  await waitFor("首次点击接管样式显示的原生菜单",()=>evaluate("Boolean(document.querySelector('.native-session-dropdown .dtw-menu-extras'))"))
+    .catch(async error=>{throw new Error(error.message+': '+JSON.stringify(await evaluate("({nativeId:fixture.state.nativeMenu?.id,menuId:fixture.state.menu?.id,alternate:fixtureAlternateMenu?.outerHTML,native:document.querySelector('.ds-dropdown-menu')?.outerHTML,toasts:document.querySelector('.dtw-toast')?.textContent})")));});
+  await checkMenuPosition(".native-session-dropdown","session-menu","s2");
+  await pointerClick("session-menu","s2");
+  assert.equal(await evaluate("fixtureAlternateMenu===null&&fixture.state.nativeMenu===null"),true,'第二次点击应关闭而不是打开另一个菜单');
+  await evaluate(`document.addEventListener('pointerdown',event=>{
+    if(fixtureOpenTrigger&&!document.querySelector('.ds-dropdown-menu')?.contains(event.target)&&event.target!==fixtureOpenTrigger){
+      fixtureOpenTrigger=null;clearTimeout(fixtureMenuTimer);document.querySelector('.ds-floating-container')?.remove();
+    }
+  },true);`);
+  await pointerClick("session-menu","s1");
+  await waitFor("鼠标首次点击打开项目会话菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
+  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
+  await evaluate("fixture.state.snapshot.sessions.find(session=>session.sessionId==='s1').title='菜单打开期间标题更新';fixture.renderTree()");
+  assert.equal(await evaluate("fixture.state.nativeMenu.anchor===document.querySelector('[data-action=session-menu][data-id=s1]')"),true,'刷新重建会话行后保留菜单并更新锚点');
+  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
+  await pointerClick("session-menu","s1");
+  await delay(100);
+  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixture.state.nativeMenu===null"),true,'原生按下事件关闭后不能被插件重新打开到左上角');
+  await pointerClick("session-menu","s7");
+  await waitFor("鼠标首次点击打开未归类菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
+  await checkMenuPosition(".ds-dropdown-menu","session-menu","s7");
+  await pointerClick("session-menu","s7");
+  await delay(100);
+  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixture.state.nativeMenu===null"),true);
+  await pointerClick("session-menu","s1");
+  await waitFor("原生提前关闭前的菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
+  await evaluate("document.querySelector('.ds-floating-container').remove();fixtureOpenTrigger=null;fixture.closeNativeMenu(true)");
+  await delay(100);
+  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixtureOpenTrigger===null"),true,'清理已关闭菜单不得再次触发原生按钮');
   await click("session-menu", "s1");
   await waitFor("再次打开供关闭验证", () => evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
   await click("session-menu", "s1");
@@ -257,7 +306,7 @@ try {
   assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
   await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
-  console.log(JSON.stringify({ ok: true, checks: "sidebar hints, hidden archives, native menu coordinates, callbacks, collapse, themes and viewport" }));
+  console.log(JSON.stringify({ ok: true, checks: "single pointer click for project/unassigned menus, delayed style mount, refreshed anchors, no orphan dropdown, native callbacks, hints, archives and viewport" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();
