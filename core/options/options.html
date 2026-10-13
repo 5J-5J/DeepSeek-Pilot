@@ -13,8 +13,8 @@
 <div class="setting-row"><label for="memoryModeDefault">默认带入项目记忆</label><input id="memoryModeDefault" class="switch" type="checkbox" aria-label="新会话默认带入项目记忆"></div>
 <div class="setting-row"><div class="setting-label"><label for="memoryStartAtMs">起始时间</label><button type="button" class="help-trigger" aria-label="记忆起始时间详情" data-help="使用本机时区，默认是插件首次运行时间。只整理此时间及之后创建的普通会话，旧会话后来追加消息也不纳入。创建时间未知时暂不整理。修改时间立即生效并保留已有记忆；根据本地已保存的会话更新队列，不扫描远端历史。尚未保存的历史在用户打开会话时接收。">i</button></div><input id="memoryStartAtMs" type="datetime-local" step="1" required></div></section>
 <section class="card settings-section"><header class="section-heading"><h2>聊天显示</h2><button type="button" class="help-trigger" aria-label="聊天显示详情" data-help="这两个开关立即保存，仅控制聊天页面中自动追加记忆的显示，不影响实际发送给 DeepSeek 的内容。">i</button></header>
-<div class="setting-row"><label for="showPersonalMemory">显示个人记忆</label><input id="showPersonalMemory" class="switch" type="checkbox"></div>
-<div class="setting-row"><label for="showProjectMemory">显示项目记忆</label><input id="showProjectMemory" class="switch" type="checkbox"></div></section>
+<div class="setting-row"><label for="showPersonalMemory">在聊天中显示已附带的个人记忆</label><input id="showPersonalMemory" class="switch" type="checkbox"></div>
+<div class="setting-row"><label for="showProjectMemory">在聊天中显示已附带的项目记忆</label><input id="showProjectMemory" class="switch" type="checkbox"></div></section>
 <section class="card settings-section"><header class="section-heading"><h2>自动化队列</h2><button type="button" class="help-trigger" aria-label="自动化队列详情" data-help="归类、记忆整理、压缩和会话接续共用串行队列，一次只运行一个任务，切换账号也不会增加并发。任务失败后跳过，其他任务继续；未完成任务显示红色提醒，可主动重试或忽略。暂停同时停止新任务、后台补读和自动清理；当前任务完成收尾，正常聊天继续。登录失效或账号受限时停止主动请求；限流后全账号冷却 60 秒。归类和接续可调序，记忆按会话顺序执行；取消整理保留已有记忆，取消接续保留原草稿。">i</button></header>
 <div class="section-toolbar"><p id="queueSummary" role="status"></p><div class="actions"><button id="refreshQueue">刷新</button><button id="pauseQueue">暂停队列</button></div></div>
 <div id="automationQueue"></div><details class="history-details"><summary>最近完成或取消</summary><div id="queueHistory"></div></details></section>

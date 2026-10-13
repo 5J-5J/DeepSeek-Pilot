@@ -547,6 +547,7 @@ ${backgroundSource}
       state.lastHistory={conversationId:'message-edit-session',title:'本地确认测试',records:[userRecord]};state.lastHistoryAt=Date.now();
       chrome.runtime.sendMessage=async message=>{requests.push(message);
         if(message.type==='dtw:session-history')return {ok:true,history:state.lastHistory};
+        if(message.type==='dtw:snapshot')return {ok:true,...state.snapshot};
         return {ok:true};};
       const editor=document.createElement('textarea');editor.id='chat-input';host.append(editor);
       const old=node('user',prompt);node('assistant','上次的回答');
@@ -565,6 +566,12 @@ ${backgroundSource}
       state.lastHistory.records.push({...userRecord,messageId:3});
       results.stored=await fixture.confirmUserMessage('stored',prompt,before,100);
       results.storedMessageId=requests.find(message=>message.jobId==='stored')?.userMessageId;
+      state.lastHistory.records.push({...userRecord,messageId:5,fragments:[{type:'REQUEST',content:'同一个问题\\n第二行'}]});
+      const rawAnswer=node('assistant','本轮实际回复');
+      results.rawHistory=await fixture.confirmUserMessage('raw-history',prompt,before,100);
+      results.rawHistoryId=requests.find(message=>message.jobId==='raw-history')?.userMessageId;
+      results.rawHistoryMemory=state.lastHistory.records.at(-1).sentMemoryBlock;
+      rawAnswer.remove();
       results.knownRoute=await fixture.confirmUserMessage('known-route',prompt,
         {...before,sessionId:'',userCount:0,knownSessionIds:new Set(['message-edit-session'])},20);
       const localSend=chrome.runtime.sendMessage;state.lastHistoryAt=0;
@@ -581,7 +588,7 @@ ${backgroundSource}
       results.newChatSession=requests.find(message=>message.jobId==='new-chat')?.sessionId;
       results.nativeSends=nativeSends;
       results.noHistoryRequest=historyRequests===0 && !requests.some(message=>message.type==='dtw:history-request-slot');
-      results.noRetry=requests.filter(message=>message.type==='dtw:send-status' && message.confirmed).length===3;
+      results.noRetry=requests.filter(message=>message.type==='dtw:send-status' && message.confirmed).length===4;
     } finally {
       delete globalThis.fixtureRoute;host.remove();window.removeEventListener('dtw:history-request',onHistory);
       chrome.runtime.sendMessage=originalSend;
@@ -593,7 +600,9 @@ ${backgroundSource}
   assert.equal(localSendChecks.controlsOnly,false,'助手操作按钮不能充当实际回复');
   assert.equal(localSendChecks.knownRoute,false,'跳到已有会话不能当作本次新会话发送');
   assert.equal(localSendChecks.changedRoute,false,'异步读取本地记录期间切换页面不能确认到错误的会话');
-  for (const key of ['dom','stored','newChat','noHistoryRequest','noRetry'])assert.equal(localSendChecks[key],true,key);
+  for (const key of ['dom','stored','rawHistory','newChat','noHistoryRequest','noRetry'])assert.equal(localSendChecks[key],true,key);
+  assert.equal(localSendChecks.rawHistoryId,5,'原生历史仅含问题时只使用实际新消息 ID');
+  assert.match(localSendChecks.rawHistoryMemory,/使用中文/);
   assert.equal(localSendChecks.domMessageId,null,'本地页面确认不伪造消息 ID');
   assert.equal(localSendChecks.storedMessageId,3);
   assert.equal(localSendChecks.newChatSession,'new-local-send');assert.equal(localSendChecks.nativeSends,1);

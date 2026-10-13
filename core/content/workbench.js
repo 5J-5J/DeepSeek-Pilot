@@ -12,6 +12,7 @@
     menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
     bypassSend: false, pendingSend: false,
+    memoryPreview: null, memoryPreviewKey: "", memoryPreviewRequestKey: "",
     submittedAtMs: null, submittedRoute: "", firstOutputAtMs: null, lastHistory: null, lastHistoryAt: 0,
     turn: { route: "", count: 0, text: "", since: 0, generating: false, primed: false } };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -461,6 +462,64 @@
     button.setAttribute("aria-label", `首条消息带入项目记忆，${enabled ? "已开启" : "已关闭"}`);
     button.title = isAutomation ? "自动化会话仅用于收纳，不使用项目记忆"
       : row?.projectId || state.pendingNewProjectId ? `首条消息带入项目记忆：${enabled ? "开" : "关"}；个人与项目记忆均只带入一次，接续新会话时重新带入` : "选择项目以在首条消息带入项目记忆；个人记忆也仅首条消息带入";
+    renderMemoryStatus(anchor.parentElement);
+  }
+
+  function memoryPreviewKey() {
+    return JSON.stringify([state.accountId, currentId(), state.pendingNewProjectId, newChatMemoryEnabled(),
+      state.snapshot?.sessions.find((session) => session.sessionId === currentId()), membership(currentId()),
+      state.snapshot?.projects, state.snapshot?.memories, state.snapshot?.jobs]);
+  }
+  function memoryPreviewArgs() {
+    return { sessionId: currentId(), newChatProjectId: state.pendingNewProjectId, newChatMemoryEnabled: newChatMemoryEnabled() };
+  }
+  function renderMemoryStatus(anchor) {
+    let panel = document.querySelector(".dtw-memory-status");
+    if (!panel) { panel = document.createElement("div"); panel.className = "dtw-memory-status dtw-owned"; }
+    if (anchor.nextElementSibling !== panel) anchor.after(panel);
+    const requestKey = memoryPreviewKey();
+    const preview = state.memoryPreviewKey === requestKey ? state.memoryPreview : null;
+    const statusText = { PENDING: "首条待带入", APPLIED: "本会话已带入", NOT_APPLIED: "本会话未带入",
+      UNKNOWN: "状态待确认", AUTOMATION: "自动化会话不带入记忆" };
+    let text = preview ? statusText[preview.status] || "状态待确认" : "状态待确认 · 正在读取本地记录";
+    if (preview) {
+      text += preview.projectName ? ` · 当前项目：${preview.projectName}` : " · 未选项目";
+      if (preview.status === "PENDING") {
+        const scopes = [preview.personalCount && `个人记忆 ${preview.personalCount} 条`,
+          preview.projectGoal && `项目目标及 ${preview.projectCount} 条项目记忆`].filter(Boolean);
+        text += scopes.length ? ` · ${scopes.join("；")}` : " · 暂无可带入记忆";
+      }
+      if (preview.status === "APPLIED" && preview.attachedScopes?.length) text += ` · ${preview.attachedScopes.join("、")}`;
+    }
+    const note = preview?.status === "AUTOMATION" ? "此会话不用于记忆学习。"
+      : preview?.status === "APPLIED" ? "后续消息不重复带入；关闭开关不会撤回已发送背景。接续新会话会重新带入最新记忆；记忆学习独立进行。"
+      : preview?.status === "NOT_APPLIED" ? "当前会话不会补发；可带入记忆开启新会话。记忆学习独立进行。"
+      : preview?.status === "UNKNOWN" ? "历史或发送结果尚未确认，不能判定已带入；请核对会话。"
+      : "个人记忆自动带入；项目开关只控制项目背景。聊天显示开关不影响发送，记忆学习独立进行。";
+    const feedback = preview?.error || (preview?.projectUnavailable ? "项目不可用，请重新选择。"
+      : preview?.chooseProject ? "项目记忆已开启，请先选择项目。" : "");
+    const html = `<div role="status">${esc(text)}</div><div class="dtw-memory-note">${esc(feedback || note)}</div>
+      ${preview?.block ? `<details><summary>${preview.status === "PENDING" ? "预览首条将带入的内容" : "查看本会话实际带入的内容"}</summary><pre>${esc(preview.block)}</pre></details>` : ""}
+      ${preview?.nextSelection?.block ? `<details><summary>接续新会话将带入：个人 ${preview.nextSelection.personalCount} 条，项目目标及 ${preview.nextSelection.projectCount} 条</summary><pre>${esc(preview.nextSelection.block)}</pre></details>` : ""}
+      ${preview && ["APPLIED", "NOT_APPLIED"].includes(preview.status) ? `<button data-action="memory-new-chat" data-id="${esc(preview.projectId || "")}">带入记忆开启新会话</button>` : ""}`;
+    if (panel.dtwContent !== html) {
+      const open = Boolean(panel.querySelector("details")?.open);
+      panel.innerHTML = html; panel.dtwContent = html;
+      if (open && panel.querySelector("details")) panel.querySelector("details").open = true;
+    }
+    if (state.accountId && state.memoryPreviewKey !== requestKey && state.memoryPreviewRequestKey !== requestKey) {
+      state.memoryPreviewRequestKey = requestKey;
+      send("memory-preview", memoryPreviewArgs()).then((result) => {
+        if (memoryPreviewKey() !== requestKey) return;
+        state.memoryPreview = result; state.memoryPreviewKey = requestKey; renderMemoryButton();
+      }).catch((error) => {
+        if (memoryPreviewKey() === requestKey) {
+          state.memoryPreview = { status: "UNKNOWN", error: error.message };
+          state.memoryPreviewKey = requestKey;
+          renderMemoryButton();
+        }
+      }).finally(() => { if (state.memoryPreviewRequestKey === requestKey) state.memoryPreviewRequestKey = ""; });
+    }
   }
   function messageRole(node) {
     const role = String(node.getAttribute?.("data-message-author-role") || "").toLowerCase();
@@ -479,6 +538,7 @@
   function nodeText(node) { const copy = node.cloneNode(true); copy.querySelectorAll(".dtw-message-meta").forEach((x) => x.remove()); return (copy.innerText || copy.textContent || "").trim(); }
   const visibleUserMessages = new WeakMap();
   const visibleMemoryPanels = new WeakMap();
+  const historicalMemoryPanels = new WeakMap();
   const memoryEditors = new Map();
   let renderingMemoryEditors = false;
   let lastEditContext = "";
@@ -555,9 +615,24 @@
   function renderUserMessage(node, record) {
     if (node.matches('textarea, [contenteditable="true"]') || node.querySelector('textarea, [contenteditable="true"]')) {
       visibleMemoryPanels.get(node)?.remove(); visibleMemoryPanels.delete(node);
+      historicalMemoryPanels.get(node)?.remove(); historicalMemoryPanels.delete(node);
       return;
     }
-    const original = DTWHistory.fragmentText(record);
+    const received = DTWHistory.fragmentText(record);
+    const original = record.sentMemoryBlock && DTWMemoryDisplay.visibleText(received, false, false) === null
+      ? `${record.sentMemoryBlock}\n\n<current_question>\n${received}\n</current_question>` : received;
+    const actualBlock = DTWMemoryDisplay.visibleText(original, false, false) !== null
+      ? original.match(/<project_memory>[\s\S]*?<\/project_memory>/i)?.[0] : "";
+    if (actualBlock && Number.isInteger(record.messageId)) {
+      let historyPanel = historicalMemoryPanels.get(node);
+      if (!historyPanel) {
+        historyPanel = document.createElement("details"); historyPanel.className = "dtw-memory-history dtw-owned";
+        historicalMemoryPanels.set(node, historyPanel);
+      }
+      const html = `<summary>查看本条实际附带的记忆</summary><pre>${esc(actualBlock)}</pre>`;
+      if (historyPanel.innerHTML !== html) historyPanel.innerHTML = html;
+      if (node.previousElementSibling !== historyPanel) node.before(historyPanel);
+    } else { historicalMemoryPanels.get(node)?.remove(); historicalMemoryPanels.delete(node); }
     const shown = DTWMemoryDisplay.visibleText(original,
       state.snapshot?.settings.showPersonalMemory, state.snapshot?.settings.showProjectMemory);
     const prior = visibleUserMessages.get(node);
@@ -623,7 +698,7 @@
     while (Number.isInteger(id) && byId.has(id) && !seen.has(id)) { seen.add(id); branch.push(byId.get(id)); id = byId.get(id).parentId; }
     branch.reverse();
     const nodes = messageNodes();
-    const labels = new Set(); const memoryPanels = new Set();
+    const labels = new Set(); const memoryPanels = new Set(); const historyPanels = new Set();
     const normalize = (text) => String(text).replace(/\s+/g, "");
     let aligned = true;
     for (let index = 0; index < nodes.length; index++) {
@@ -639,6 +714,8 @@
           : record || { messageId: `visible_${index}`, fragments: [{ type: "REQUEST", content: original }] });
       const panel = visibleMemoryPanels.get(node);
       if (panel?.isConnected) memoryPanels.add(panel);
+      const historyPanel = historicalMemoryPanels.get(node);
+      if (historyPanel?.isConnected) historyPanels.add(historyPanel);
       if (!showMetadata || !record || (role === "ASSISTANT" && index === nodes.length - 1 && isGenerating())) continue;
       const anchor = panel?.isConnected ? panel : node;
       let label = anchor.nextElementSibling?.classList.contains("dtw-message-meta")
@@ -655,6 +732,7 @@
     }
     document.querySelectorAll(".dtw-message-meta").forEach((label) => { if (!labels.has(label)) label.remove(); });
     document.querySelectorAll(".dtw-visible-memory").forEach((panel) => { if (!memoryPanels.has(panel)) panel.remove(); });
+    document.querySelectorAll(".dtw-memory-history").forEach((panel) => { if (!historyPanels.has(panel)) panel.remove(); });
     return records.length > 0 && nodes.length === branch.length && aligned;
   }
   function observeMessageDisplay() {
@@ -902,7 +980,8 @@
           const captured = await currentHistory();
           if (currentId() !== id) continue;
           const user = [...(captured?.conversationId === id ? captured.records : [])].reverse().find((entry) => entry.role === "USER");
-          const stored = user && (id !== before.sessionId || !before.userMessageIds.has(user.messageId))
+          const freshUser = user && (id !== before.sessionId || !before.userMessageIds.has(user.messageId));
+          const stored = freshUser
             && user.fragments.some((fragment) => fragment.type === "REQUEST" && normalized(fragment.content).includes(expected));
           const nodes = messageNodes(); const users = nodes.filter((node) => messageRole(node) === "USER");
           const latest = users.at(-1);
@@ -919,13 +998,16 @@
               state.lastHistory = captured; state.lastHistoryAt = Date.now();
               renderMessageInfo();
             }
+            const identified = freshUser && (stored || user.fragments.some((fragment) => fragment.type === "REQUEST"
+              && normalized(fragment.content) === question));
             await send("send-status", { jobId, confirmed: true, sessionId: id,
-              userMessageId: stored ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
+              userMessageId: identified ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
+            if (identified) user.sentMemoryBlock = prompt.match(/<project_memory>[\s\S]*?<\/project_memory>/i)?.[0] || "";
             if (state.pendingNewProjectId) {
               state.pendingNewProjectId = "";
               state.pendingNewConversationAt = 0;
-              await refresh();
             }
+            await refresh().catch((error) => { state.memoryPreviewKey = ""; showToast(`消息已确认，状态更新失败：${error.message}`, 5000); });
             return true;
           }
         } catch (error) { if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED"].includes(error.code)) throw error; /* DSW may still be creating the session. */ }
@@ -972,7 +1054,13 @@
         state.pickerSessionId = NEW_CHAT; renderModal(); return;
       }
       if (!currentId() && state.pendingNewProjectId) markPendingNewConversation();
-      const prepared = await send("prepare-send", { sessionId: currentId(), newChatProjectId: state.pendingNewProjectId, rawInput });
+      const prepared = await send("prepare-send", { ...memoryPreviewArgs(), rawInput,
+        previewRevision: state.memoryPreviewKey === memoryPreviewKey() ? state.memoryPreview?.revision : undefined,
+        rolloverPreviewRevision: state.memoryPreviewKey === memoryPreviewKey() ? state.memoryPreview?.rolloverRevision : undefined });
+      if (prepared.previewChanged) {
+        state.memoryPreview = prepared.preview; state.memoryPreviewKey = memoryPreviewKey();
+        renderMemoryButton(); showToast("记忆或会话状态已变化，预览已刷新，请核对后再次发送", 6000); return;
+      }
       if (prepared.chooseProject) { state.pickerSessionId = currentId(); renderModal(); return; }
       if (prepared.native) { await submit(editor); return; }
       if (prepared.rollover) {
@@ -983,7 +1071,7 @@
       }
       await doProjectSend(editor, prepared.prompt, prepared.jobId);
     } catch (error) { showToast(error.message, 5000); }
-    finally { state.pendingSend = false; }
+    finally { state.pendingSend = false; renderMemoryButton(); }
   }
   async function runAutomation(message) {
     state.automationRunning = true;
@@ -1196,7 +1284,9 @@
     await refresh();
     try {
       await currentHistory();
-      showToast("项目记忆已开启，仅首条消息带入；正在检查旧会话");
+      const session = state.snapshot.sessions.find((item) => item.sessionId === sessionId);
+      showToast(session?.hasUserMessage ? "项目记忆已开启，当前会话不会补发；可带入记忆开启新会话"
+        : "项目记忆已开启，仅首条消息带入；记忆学习独立进行");
     } catch { showToast("项目记忆已开启，仅首条消息带入；历史同步后会继续整理"); }
   }
   async function handleAction(button) {
@@ -1258,12 +1348,13 @@
         if (state.menu?.kind === "project" && state.menu.id === id) closeMenu(true);
         else openMenu("project", id, button);
       }
-      if (action === "project-new-chat") {
+      if (action === "project-new-chat" || action === "memory-new-chat") {
         closeMenu();
         const entry = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "开启新对话");
         if (!entry) throw new Error("找不到 DeepSeek 新对话入口，请刷新页面后重试");
         entry.click();
         state.pendingNewProjectId = id; state.newChatMemoryOff = false;
+        if (action === "memory-new-chat" && !id) state.newChatMemoryOff = true;
         toggleGroup("__projects__", false); toggleGroup(id, false);
         renderMemoryButton();
       }
@@ -1339,7 +1430,7 @@
         if (!row.memoryModeEnabled && !row.projectId) {
           state.pickerSessionId = sessionId; state.enableMemoryAfterMove = sessionId; renderModal(); return;
         }
-        if (row.memoryModeEnabled) { await send("memory-toggle", { sessionId, enabled: false }); await refresh(); showToast("已关闭项目记忆；个人与项目记忆均仅在会话首条消息带入"); }
+        if (row.memoryModeEnabled) { await send("memory-toggle", { sessionId, enabled: false }); await refresh(); showToast("已关闭项目记忆开关；已发送背景不会撤回，记忆学习独立进行"); }
         else await enableMemory(sessionId);
       }
     } catch (error) { showToast(error.message, 5000); }

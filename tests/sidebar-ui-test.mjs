@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "dtw-sidebar-test-"));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const [source, css, historySource, uiSource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js", "ui.js"]
+const [source, css, historySource, uiSource, memorySource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js", "ui.js", "logic/memory-display.js"]
   .map(file => fs.readFile(path.join(root, "core", file), "utf8")));
 const titles = ["设计IP流量展示图", "G6展示模板比较", "功能分析与架构设计", "梳理推理可视化需求", "未知IP负责人应用成果", "展开显示"];
 const html = `<!doctype html><html lang="zh"><head><meta charset="UTF-8"><style>
@@ -91,6 +91,8 @@ try {
     globalThis.fixtureOpenTrigger=null;globalThis.fixtureMenuTimer=0;globalThis.prompt=()=>"插件改名测试";globalThis.confirm=()=>true;
     globalThis.chrome={runtime:{getURL:()=>"data:text/javascript,",onMessage:{addListener(){}},sendMessage:async message=>{
       fixtureRequests.push(message);
+      if(message.type==='dtw:memory-preview')return {ok:true,...fixturePreview};
+      if(message.type==='dtw:prepare-send')return {ok:true,previewChanged:true,preview:{...fixturePreview,revision:'refreshed',block:'<project_memory>\\n## 个人记忆\\n### 偏好\\n1. 发送前刷新\\n</project_memory>'}};
       const data=fixture.state.snapshot;
       if(message.type==='dtw:membership-move'){
         const row=data.memberships.find(row=>row.sessionId===message.sessionId);
@@ -103,8 +105,10 @@ try {
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
     ${uiSource}
+    ${memorySource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
-      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal};
+      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal,renderMemoryButton,renderUserMessage,memorySend,
+        enableMemoryUI:()=>{renderMemoryButton=fixture.renderMemoryButton;refresh=async()=>{renderTree();renderMemoryButton();}}};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -285,6 +289,51 @@ try {
   assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
   await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
+  await evaluate(`fixture.state.snapshot.sessions.push(...Array.from({length:14},(_,i)=>({sessionId:'p0-helper-'+i,purpose:'MEMORY',automationOrigin:'PLUGIN',updatedAtMs:i})),
+    {sessionId:'p0-manual',purpose:'AUTOMATION',automationOrigin:'MANUAL',updatedAtMs:-2},
+    {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:-3});fixture.renderTree()`);
+  assert.equal(await evaluate("document.querySelectorAll('[data-session^=p0-helper-]').length"), 10);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=p0-manual]'))&&Boolean(document.querySelector('[data-session=p0-unknown]'))"), true, "手动收纳和来源不明会话不被数量上限隐藏");
+  await click("session-menu", "p0-manual");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-action=automation-unmark]'))"), true);
+  await page.call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 900, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`document.body.click();history.pushState(null,'','/a/chat');
+    document.body.insertAdjacentHTML('beforeend','<main id="composer" style="position:absolute;left:320px;top:100px;width:650px"><textarea id="chat-input" placeholder="发送消息">测试问题</textarea><div><button aria-pressed="false">深度思考</button><button aria-pressed="false">联网搜索</button></div><div id="history-bubble" data-message-author-role="user">历史问题</div></main>');
+    fixture.state.pendingNewProjectId='p1';fixture.state.snapshot.memories=[];
+    fixturePreview={status:'PENDING',personalCount:1,projectCount:44,projectGoal:true,projectId:'p1',projectName:'测试项目',revision:'first',
+      block:'<project_memory>\\n## 个人记忆\\n### 偏好\\n1. 原始个人背景\\n\\n## 项目记忆：测试项目\\n### 目标\\n1. 原始项目目标\\n</project_memory>'};
+    fixture.enableMemoryUI();fixture.renderMemoryButton()`);
+  await waitFor("首条状态", () => evaluate("document.querySelector('.dtw-memory-status').textContent.includes('首条待带入')"));
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status').textContent"), /个人记忆 1 条.*44 条项目记忆/);
+  assert.equal(await evaluate("fixtureRequests.some(message=>message.type==='dtw:prepare-send')"), false, "打开预览不准备发送任务");
+  await evaluate("document.querySelector('.dtw-memory-status details').open=true");
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status pre').textContent"), /原始个人背景/);
+  await evaluate("fixture.memorySend(document.querySelector('#chat-input'))");
+  assert.equal(await evaluate("document.querySelector('#chat-input').value"), "测试问题", "预览更新不发送、不清空草稿");
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status pre').textContent"), /发送前刷新/);
+  await evaluate(`history.pushState(null,'','/a/chat/s/s1');fixturePreview={...fixturePreview,status:'NOT_APPLIED',block:''};fixture.renderMemoryButton()`);
+  await waitFor("已有会话未带入", () => evaluate("document.querySelector('.dtw-memory-status').textContent.includes('本会话未带入')"));
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status').textContent"), /当前会话不会补发/);
+  const newChatsBefore = await evaluate("fixtureNewChats");
+  await click("memory-new-chat", "p1");
+  assert.equal(await evaluate("fixtureNewChats"), newChatsBefore + 1);
+  assert.equal(await evaluate("fixture.state.pendingNewProjectId"), "p1");
+  await evaluate(`history.pushState(null,'','/a/chat/s/s1');fixture.state.snapshot.sessions.find(s=>s.sessionId==='s1').hasUserMessage=true;
+    fixturePreview={...fixturePreview,status:'APPLIED',attachedScopes:['个人记忆','项目背景']};fixture.renderMemoryButton()`);
+  await waitFor("已带入状态", () => evaluate("document.querySelector('.dtw-memory-status').textContent.includes('本会话已带入')"));
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status').textContent"), /关闭开关不会撤回/);
+  await evaluate(`fixture.renderUserMessage(document.querySelector('#history-bubble'),{messageId:1,fragments:[{type:'REQUEST',content:
+    '<project_memory>\\n## 个人记忆\\n### 偏好\\n1. 历史真实背景\\n</project_memory>\\n\\n<current_question>\\n历史问题\\n</current_question>'}]});
+    fixture.state.snapshot.memories=[{memoryId:'new',content:'最新背景'}];document.querySelector('.dtw-memory-history').open=true;`);
+  assert.match(await evaluate("document.querySelector('.dtw-memory-history pre').textContent"), /历史真实背景/);
+  assert.equal(await evaluate("document.querySelector('.dtw-memory-history pre').textContent.includes('最新背景')"), false);
+  assert.equal(await evaluate("document.querySelector('#history-bubble').textContent"), "历史问题", "关闭显示时仍可展开历史实际内容");
+  const memoryScreenshot = await page.call("Page.captureScreenshot", { format: "png" });
+  await fs.writeFile(path.join(root, ".live-fs", "memory-p0.png"), Buffer.from(memoryScreenshot.data, "base64"));
+  await evaluate("fixturePreview={ok:false,error:'本地预览读取失败'};fixture.state.pendingNewProjectId='';fixture.renderMemoryButton()");
+  await waitFor("预览失败状态", () => evaluate("document.querySelector('.dtw-memory-status').textContent.includes('本地预览读取失败')"));
+  assert.match(await evaluate("document.querySelector('.dtw-memory-status').textContent"), /状态待确认/);
+  assert.equal(await evaluate("Boolean(document.querySelector('.dtw-memory-status pre'))"), false, "预览失败不显示旧会话的附带内容");
   console.log(JSON.stringify({ ok: true, checks: "plugin menus open on one click, refreshed anchors, original callbacks without visible dropdowns, pin state, hints, archives and viewport" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
