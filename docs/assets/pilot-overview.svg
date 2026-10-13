@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">DeepSeek Pilot — New chat. Keep going.</title>
+  <desc id="desc">Concept diagram, not a product screenshot. Projects organize conversations, personal and project memories provide context, and the next chat continues the work.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1830"/><stop offset="1" stop-color="#152c43"/></linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="none" stroke="#61d6c2" stroke-width="1.5"/></marker>
+  </defs>
+  <rect width="1200" height="480" rx="24" fill="url(#bg)"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <path d="M48 63L85 45L76 82L66 65Z" fill="#61d6c2"/>
+    <text x="104" y="76" fill="#fff" font-size="32" font-weight="700">DeepSeek Pilot</text>
+    <text x="48" y="130" fill="#c8d8e9" font-size="23">New chat. Keep going.</text>
+    <text x="1150" y="66" text-anchor="end" fill="#91a9c3" font-size="13" letter-spacing="2">WORKFLOW CONCEPT · v0.9.0</text>
+    <g fill="#192f49" stroke="#385371">
+      <rect x="48" y="175" width="320" height="218" rx="16"/>
+      <rect x="440" y="175" width="320" height="218" rx="16"/>
+      <rect x="832" y="175" width="320" height="218" rx="16"/>
+    </g>
+    <g fill="#61d6c2" font-size="13" letter-spacing="2">
+      <text x="72" y="207">01 / ORGANIZE</text><text x="464" y="207">02 / REMEMBER</text><text x="856" y="207">03 / CONTINUE</text>
+    </g>
+    <g fill="#fff" font-size="25" font-weight="600">
+      <text x="72" y="250">Projects</text><text x="464" y="250">Memory</text><text x="856" y="250">Your next chat</text>
+    </g>
+    <g fill="#c8d8e9" font-size="17">
+      <text x="72" y="289">Portfolio launch</text><text x="88" y="321">Audience → Structure</text><text x="88" y="353">→ Pre-launch review</text>
+      <text x="464" y="289">Personal preferences</text><text x="464" y="321">Project goals &amp; decisions</text><text x="464" y="353">Review. Edit. Export.</text>
+      <text x="856" y="289">Bring saved context</text><text x="856" y="321">into the first message.</text><text x="856" y="353">Keep the work moving.</text>
+    </g>
+    <g fill="none" stroke="#61d6c2" stroke-width="2" marker-end="url(#arrow)"><path d="M380 281H424"/><path d="M772 281H816"/></g>
+    <text x="48" y="439" fill="#91a9c3" font-size="14">Independent browser extension for DeepSeek · Concept illustration, not a UI screenshot</text>
+  </g>
+</svg>

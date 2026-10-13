@@ -1533,5 +1533,5 @@
       finally { state.syncingUi = false; }
     }, 1500);
   }
-  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));
+  start().catch((error) => console.warn("[DeepSeek Pilot]", error));
 })();
