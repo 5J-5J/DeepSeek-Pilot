@@ -67,16 +67,14 @@ DeepSeek Pilot 是一个第三方浏览器扩展，直接增强你熟悉的 Deep
 
 ### 方式一：下载 ZIP（推荐）
 
-在[仓库主页](https://github.com/5J-5J/DeepSeek-Flow)点击 **Code → Download ZIP**，下载后解压到一个固定目录。目前通过源码加载安装，不需要编译。
+在[仓库主页](https://github.com/5J-5J/DeepSeek-Pilot)点击 **Code → Download ZIP**，下载后解压到一个固定目录。目前通过源码加载安装，不需要编译。
 
 ### 方式二：Git 克隆
 
 ```sh
-git clone https://github.com/5J-5J/DeepSeek-Flow.git deepseek-pilot
+git clone https://github.com/5J-5J/DeepSeek-Pilot.git deepseek-pilot
 cd deepseek-pilot
 ```
-
-项目展示名称为 DeepSeek Pilot，当前仓库地址仍为 DeepSeek-Flow。
 
 ### 在 Chrome 中加载
 

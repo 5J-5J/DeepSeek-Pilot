@@ -67,16 +67,14 @@ The task queue handles continuation. The first message in the new chat includes 
 
 ### Option 1: Download ZIP (recommended)
 
-Open the [repository](https://github.com/5J-5J/DeepSeek-Flow), choose **Code → Download ZIP**, and extract it to a permanent folder. Installation currently uses unpacked source; no build is needed.
+Open the [repository](https://github.com/5J-5J/DeepSeek-Pilot), choose **Code → Download ZIP**, and extract it to a permanent folder. Installation currently uses unpacked source; no build is needed.
 
 ### Option 2: Clone with Git
 
 ```sh
-git clone https://github.com/5J-5J/DeepSeek-Flow.git deepseek-pilot
+git clone https://github.com/5J-5J/DeepSeek-Pilot.git deepseek-pilot
 cd deepseek-pilot
 ```
-
-The project is named DeepSeek Pilot; its repository URL still uses DeepSeek-Flow.
 
 ### Load in Chrome
 
