@@ -5,7 +5,7 @@ importScripts("../logic/db.js", "session-memory.js");
 const DB = DTWDB;
 const NOW = () => Date.now();
 const ID = () => crypto.randomUUID();
-const DEFAULTS = { maxContextTokens: 64000, warningRatio: 0.85, replyReserveTokens: 4000,
+const DEFAULTS = { maxContextTokens: 256000, warningRatio: 1, replyReserveTokens: 4000,
   memoryModeDefault: false, showPersonalMemory: false, showProjectMemory: false,
   memoryStartAtMs: null, automationPaused: false };
 const validAccount = (id) => typeof id === "string" && /^[\w-]{6,100}$/.test(id);

@@ -92,6 +92,11 @@ ${backgroundSource}
   })()`);
   await page.call("Page.reload");
   await waitFor("记忆分组", () => evaluate(page, "document.querySelectorAll('.memory-group').length === 5"));
+  assert.deepEqual(await evaluate(page, "[...document.querySelector('#maxContextTokens').options].map(option=>Number(option.value))"),
+    [32000,64000,128000,256000,384000,512000,768000,1000000]);
+  assert.equal(await evaluate(page, "document.querySelector('#maxContextTokens').value"), '256000');
+  assert.match(await evaluate(page, "document.querySelector('#maxContextTokens').selectedOptions[0].textContent"), /默认.*推荐/);
+  assert.equal(await evaluate(page, "document.querySelector('#warningRatio').value"), '1');
   assert.deepEqual(await evaluate(page, "[...document.querySelectorAll('#scopes button')].map(button=>button.textContent.split('（')[0])"),
     ['个人记忆','界面测试项目','更早的正常项目','乙新归档','丙按创建时间归档','甲旧归档'], '记忆管理中归档项目置底，各组按更新时间从新到旧排序');
   assert.equal(await evaluate(page, "[...document.querySelectorAll('#scopes button')].slice(-3).every(button=>button.textContent.endsWith('已归档'))"), true);
@@ -135,7 +140,8 @@ ${backgroundSource}
   await waitFor("未修改日期", () => evaluate(page, "!document.querySelector('#memoryStartAtMs').disabled"));
   assert.equal(await evaluate(page, "chrome.runtime.sendMessage({type:'dtw:snapshot',accountId:'ui-test-account'}).then(data=>data.settings.memoryStartAtMs)"), unchangedStart,
     "未修改日期应保留首次运行时间的毫秒精度");
-  for (const [key, value] of [["maxContextTokens", 128000], ["warningRatio", 0.95], ["replyReserveTokens", 8000],
+  for (const [key, value] of [["maxContextTokens", 128000], ["maxContextTokens", 384000], ["maxContextTokens", 512000],
+    ["maxContextTokens", 768000], ["maxContextTokens", 1000000], ["warningRatio", 0.95], ["replyReserveTokens", 8000],
     ["memoryModeDefault", true], ["showPersonalMemory", true], ["showProjectMemory", true]]) {
     await evaluate(page, `(()=>{const input=document.getElementById(${JSON.stringify(key)});
       input[input.type==='checkbox'?'checked':'value']=${JSON.stringify(value)};input.dispatchEvent(new Event('change'));})()`);
@@ -143,6 +149,8 @@ ${backgroundSource}
       `DTWDB.get('settings',['ui-test-account',${JSON.stringify(key)}]).then(row=>row?.value===${JSON.stringify(value)})`));
     await waitFor(`解除禁用 ${key}`, () => evaluate(page, `!document.getElementById(${JSON.stringify(key)}).disabled`));
   }
+  await page.call("Page.reload");
+  await waitFor("重新加载自选预算", () => evaluate(page, "document.querySelector('#maxContextTokens').value==='1000000' && document.querySelector('#warningRatio').value==='0.95' && document.querySelector('#replyReserveTokens').value==='8000'"));
   await evaluate(page, "document.querySelector('#memoryStartAtMs').value='';document.querySelector('#memoryStartAtMs').dispatchEvent(new Event('change'))");
   await waitFor("无效日期回退", () => evaluate(page, "document.querySelector('#settingsNotice').textContent.includes('有效的记忆起始时间') && document.querySelector('#memoryStartAtMs').value.length>0"));
   await evaluate(page, `globalThis.originalSettingsSend=chrome.runtime.sendMessage;

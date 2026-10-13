@@ -50,6 +50,9 @@ const extensionRequest = (type, body = {}) => new Promise((resolve) => listener(
 
 assert.equal((await extensionRequest("snapshot")).ok, true);
 const initialDisplaySettings = (await extensionRequest("snapshot")).settings;
+assert.equal(initialDisplaySettings.maxContextTokens, 256000);
+assert.equal(initialDisplaySettings.warningRatio, 1);
+assert.equal(initialDisplaySettings.replyReserveTokens, 4000);
 assert.equal(initialDisplaySettings.showPersonalMemory, false);
 assert.equal(initialDisplaySettings.showProjectMemory, false);
 assert.equal((await extensionRequest("settings-update", { key: "showPersonalMemory", value: true })).value, true);
@@ -367,8 +370,31 @@ assert.equal(projectAfterReload.native, true, "项目记忆在刷新后台后也
 await db.put("messages", { accountId: injectionAccount, sessionId: "personal-first", messageId: 2, parentId: 1,
   role: "ASSISTANT", status: "FINISHED", accumulatedTokenUsage: 65000, fragments: [{ type: "RESPONSE", content: "之前的工作" }] });
 await db.put("sessions", { ...await db.get("sessions", [injectionAccount, "personal-first"]), currentMessageId: 2 });
-const successor = await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "接续问题" });
-assert.equal(successor.rollover, true);
+assert.equal((await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "接续问题" })).native, true,
+  "旧的 64k 阈值不再触发默认预算接续");
+let successor;
+for (const budget of [256000, 512000, 1000000]) {
+  if (budget !== 256000)
+    assert.equal((await injectionRequest("settings-update", { key: "maxContextTokens", value: budget })).value, budget);
+  const cfg = (await injectionRequest("snapshot")).settings;
+  assert.equal(cfg.maxContextTokens, budget);
+  const tip = await db.get("messages", [injectionAccount, "personal-first", 2]);
+  const boundary = budget - cfg.replyReserveTokens - Math.ceil("接续问题".length / 2);
+  await db.put("messages", { ...tip, accumulatedTokenUsage: boundary - 1 });
+  const jobsBeforeBoundary = (await db.all("jobs", injectionAccount)).length;
+  assert.equal((await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "接续问题" })).native, true);
+  assert.equal((await db.all("jobs", injectionAccount)).length, jobsBeforeBoundary);
+  await db.put("messages", { ...tip, accumulatedTokenUsage: boundary });
+  successor = await injectionRequest("prepare-send", { sessionId: "personal-first", rawInput: "接续问题" });
+  assert.equal(successor.rollover, true, `${budget} 预算计入本轮输入和回答预留后才触发接续`);
+  if (budget !== 1000000)
+    await db.put("jobs", { ...await db.get("jobs", [injectionAccount, successor.jobId]), status: "DONE" });
+}
+assert.equal((await injectionRequest("settings-update", { key: "maxContextTokens", value: 1200000 })).value, 1000000,
+  "工作预算不能超过 1m 上限");
+const reloadedBudget = await new Promise(resolve => restartedListener({ type: "dtw:snapshot", accountId: injectionAccount },
+  { tab: { url: "https://chat.deepseek.com/" } }, resolve));
+assert.equal(reloadedBudget.settings.maxContextTokens, 1000000, "保存的用户预算优先于默认值");
 assert.match(successor.prompt, /回答简短/);
 assert.equal(successor.prompt.match(/## 个人记忆/g).length, 1, "接续新会话的首条消息带入一次个人记忆");
 assert.equal(successor.prompt.match(/## 项目记忆：文档项目/g).length, 1);
