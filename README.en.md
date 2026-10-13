@@ -2,9 +2,7 @@
 
 # DeepSeek Pilot
 
-**Less catching up. More moving forward.**
-
-Starting with projects and memory, working toward one chat to review progress and decide what comes next.
+**A browser extension for DeepSeek with project management, cross-chat memory, and long-conversation continuation.**
 
 [简体中文](README.md) · English
 
