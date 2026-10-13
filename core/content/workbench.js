@@ -196,7 +196,10 @@
     const nativeOrder = new Map(nativeLinks().map((link, index) => [idFromHref(link.href), index]));
     const all = state.snapshot.sessions.filter((item) => !item.deleted);
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
-    const jobs = DTWHistory.sortSessionsNewestFirst(all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose))).slice(0, 10);
+    const helpers = all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose));
+    const retained = new Set(DTWHistory.sortSessionsNewestFirst(helpers.filter((item) => item.automationOrigin === "PLUGIN"))
+      .slice(0, 10).map((item) => item.sessionId));
+    const jobs = DTWHistory.sortSessionsNewestFirst(helpers.filter((item) => item.automationOrigin !== "PLUGIN" || retained.has(item.sessionId)));
     const groups = state.snapshot.projects.filter((item) => !item.archived && (!item.systemKind || item.systemKind === "AUTOMATION"))
       .sort((a, b) => Number(Boolean(a.systemKind)) - Number(Boolean(b.systemKind))
       || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.name.localeCompare(b.name, "zh"))
@@ -233,7 +236,7 @@
         automationHelpButton = document.createElement("button");
         automationHelpButton.type = "button"; automationHelpButton.className = "dtw-help-trigger";
         automationHelpButton.textContent = "i"; automationHelpButton.setAttribute("aria-label", "自动化会话详情");
-        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的自动化会话。这些会话不参与普通会话的自动归类和记忆学习；可打开查看执行内容。仅展示最近 10 条，队列空闲时会清理更早的自动化会话。");
+        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的会话。这些会话不参与普通会话的自动归类和记忆学习；可打开查看执行内容。插件辅助会话保留最近 10 条，队列空闲时更早记录会从 DeepSeek 删除。手动收纳和来源不明的会话全部保留，不占用这 10 个名额；手动收纳可恢复为普通会话。");
         document.getElementById(automationHelpButton.getAttribute("aria-describedby")).classList.add("dtw-help-tip", "dtw-owned");
       }
       helpSlot.append(automationHelpButton);
@@ -680,7 +683,8 @@
     if (!state.automationRunning && !state.rolloverRunning && !state.pendingSend && !isGenerating()
       && !state.networkIssue && !state.snapshot.settings.automationPaused
       && !state.snapshot.jobs.some((job) => ["QUEUED", "PENDING", "RUNNING"].includes(job.status) && ["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"].includes(job.type))) {
-      const helpers = state.snapshot.sessions.filter((session) => !session.deleted && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(session.purpose));
+      const helpers = state.snapshot.sessions.filter((session) => !session.deleted && session.automationOrigin === "PLUGIN"
+        && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(session.purpose));
       const signature = helpers.map((session) => session.sessionId).sort().join(",");
       if (helpers.length > 10 && signature !== state.cleanupSignature) {
         state.cleanupSignature = signature;
@@ -1388,10 +1392,20 @@
         reply({ ok: false, error: "页面账号不匹配或正在执行任务" }); return false;
       }
       (async () => {
-        requireSendAllowed();
+        const requireCleanupAllowed = () => {
+          requireSendAllowed();
+          if (message.accountId !== state.accountId || state.automationRunning || state.rolloverRunning || state.snapshot?.settings.automationPaused)
+            throw new Error("页面账号或队列状态已变化，已保留会话");
+          const eligible = new Set(state.snapshot?.sessions.filter((session) => !session.deleted && session.automationOrigin === "PLUGIN"
+            && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(session.purpose)).map((session) => session.sessionId));
+          if (!Array.isArray(message.sessionIds) || message.sessionIds.some((id) => !eligible.has(id)))
+            throw new Error("清理范围待确认，已保留会话");
+        };
+        requireCleanupAllowed();
         let slot = await send("history-request-slot", { userAction: false });
         while (slot.waitMs > 0 && !slot.blocked) { await delay(slot.waitMs); slot = await send("history-request-slot", { userAction: false }); }
         if (slot.blocked) throw new Error(slot.message);
+        requireCleanupAllowed();
         const requestId = crypto.randomUUID();
         const pending = waitEvent("dtw:delete-result", requestId);
         window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ paused: Boolean(state.snapshot?.settings.automationPaused), issue: state.networkIssue, allowCurrentTask: false }) }));

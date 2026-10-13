@@ -112,9 +112,11 @@ async function recordAutomationSession(accountId, job, sessionId) {
   if (!id || id === job.sourceSessionId) return;
   await ensureAutomationProject(accountId);
   const previous = await DB.get("sessions", key(accountId, id));
+  if (previous?.deleted || previous?.automationOrigin === "MANUAL") return;
   const title = job.type === "CLASSIFY" ? "项目归类"
     : job.type === "COMPACT" || job.compressionInput ? "个人记忆压缩" : job.memoryScope === "PERSONAL" ? "个人记忆整理" : "项目记忆整理";
   await DB.put("sessions", { ...previous, accountId, sessionId: id,
+    automationOrigin: "PLUGIN",
     purpose: job.type === "CLASSIFY" ? "CLASSIFY" : "MEMORY", title: previous?.title || title,
     titleType: previous?.titleType || "WIP", currentMessageId: previous?.currentMessageId ?? null,
     updatedAtMs: previous?.updatedAtMs ?? NOW(), seenAtMs: NOW(), deleted: false,
@@ -137,11 +139,19 @@ async function migrateAutomationSessions(accountId) {
     const sessionId = job.automationSessionId;
     if (sessionId) {
       const session = await DB.get("sessions", key(accountId, sessionId));
+      if (session?.deleted || session?.automationOrigin === "MANUAL") continue;
       if (session?.purpose === "USER" || !session || await DB.get("memberships", key(accountId, sessionId))) {
         await recordAutomationSession(accountId, job, sessionId);
         await DB.put("jobs", job);
       }
     }
+  }
+  for (const session of await DB.all("sessions", accountId)) {
+    if (session.automationOrigin || !["CLASSIFY", "MEMORY", "AUTOMATION"].includes(session.purpose)) continue;
+    const linked = jobs.some((job) => ["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type)
+      && job.automationSessionId === session.sessionId && job.sourceSessionId !== session.sessionId);
+    session.automationOrigin = ["CLASSIFY", "MEMORY"].includes(session.purpose) || linked ? "PLUGIN" : "UNKNOWN";
+    await DB.put("sessions", session);
   }
   migratedAutomationAccounts.add(accountId);
 }
@@ -402,7 +412,7 @@ async function markAutomationSession(accountId, message) {
   if (membership?.projectId || membership?.memoryModeEnabled)
     throw new Error("请先将会话移到未归类并关闭项目记忆");
   await ensureAutomationProject(accountId);
-  session.purpose = "AUTOMATION"; session.classificationPending = false;
+  session.purpose = "AUTOMATION"; session.automationOrigin = "MANUAL"; session.classificationPending = false;
   await DB.put("sessions", session);
   if (membership) await DB.remove("memberships", key(accountId, sessionId));
   await dropPersonalPending(accountId, sessionId);
@@ -415,6 +425,7 @@ async function unmarkAutomationSession(accountId, message) {
   const session = await DB.get("sessions", key(accountId, sessionId));
   if (!session || session.purpose !== "AUTOMATION") throw new Error("这段会话不能恢复为普通会话");
   session.purpose = "USER"; session.classificationPending = false; session.loadedHistory = true;
+  session.automationOrigin = "MANUAL";
   await DB.put("sessions", session);
   await DB.put("memberships", { accountId, sessionId, projectId: null, source: "NONE", manualLock: false,
     memoryModeEnabled: false, updatedAtMs: NOW(), version: 1 });
@@ -1285,11 +1296,13 @@ async function markDeleted(accountId, message) {
 
 async function pruneAutomationSessions(accountId, message, sender) {
   if (!sender.tab?.id || !sender.tab.url?.startsWith("https://chat.deepseek.com/")) throw new Error("清理需要 DeepSeek 页面");
+  await migrateAutomationSessions(accountId);
   const cfg = await settings(accountId);
   const jobs = await DB.all("jobs", accountId);
   if (cfg.automationPaused || activeRequestIssue(cfg.requestIssue) || jobs.some((job) => QUEUED_JOB_TYPES.has(job.type) && ["QUEUED", "PENDING", "RUNNING"].includes(job.status)))
     return { ok: true, deferred: true };
-  const sessions = (await DB.all("sessions", accountId)).filter((s) => !s.deleted && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(s.purpose));
+  const sessions = (await DB.all("sessions", accountId)).filter((s) => !s.deleted
+    && s.automationOrigin === "PLUGIN" && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(s.purpose));
   sessions.sort((a, b) => (b.lastMessageAtMs ?? b.updatedAtMs ?? 0) - (a.lastMessageAtMs ?? a.updatedAtMs ?? 0)
     || a.sessionId.localeCompare(b.sessionId));
   const protectedIds = new Set();

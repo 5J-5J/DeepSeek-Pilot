@@ -472,7 +472,7 @@ assert.equal((await db.all("sessions", retentionAccount)).filter(s => !s.deleted
 assert.equal((await db.get("sessions", [retentionAccount, "ordinary"])).deleted, undefined);
 assert.equal((await db.get("sessions", ["another123", "other-account-auto"])).deleted, undefined);
 assert.equal((await prune()).deleted, undefined);
-await db.put("sessions", { accountId: retentionAccount, sessionId: "new-helper", purpose: "MEMORY", updatedAtMs: 100 });
+await db.put("sessions", { accountId: retentionAccount, sessionId: "new-helper", purpose: "MEMORY", automationOrigin: "PLUGIN", updatedAtMs: 100 });
 remoteDeleteOk = false;
 const automaticPrune = () => new Promise(resolve => listener({ type: "dtw:automation-prune", accountId: retentionAccount, automatic: true },
   { tab: { id: 42, url: "https://chat.deepseek.com/a/chat" } }, resolve));
