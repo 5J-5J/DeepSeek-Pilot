@@ -850,25 +850,38 @@
       await refresh();
     } catch (error) { showToast(`会话同步失败：${error.message}`); }
   }
-  async function confirmUserMessage(jobId, expected, timeout = 30000) {
-    const start = Date.now(); let requested = false;
+  async function confirmUserMessage(jobId, prompt, before, timeout = 30000) {
+    const start = Date.now();
+    const normalized = (text) => String(text || "").replace(/\s+/g, " ").trim();
+    const expected = normalized(prompt);
+    const question = normalized(DTWMemoryDisplay.visibleText(prompt, false, false) ?? prompt);
     while (Date.now() - start < timeout) {
+      requireSendAllowed();
       const id = currentId();
-      if (id) {
+      if (id && (before.sessionId ? id === before.sessionId : !before.knownSessionIds.has(id))) {
         try {
-          let captured = await currentHistory();
-          let user = [...(captured?.records || [])].reverse().find((entry) => entry.role === "USER");
-          if (!requested && !user?.fragments.some((fragment) => fragment.type === "REQUEST" && fragment.content.includes(expected)) && Date.now() - start > 1500) {
-            requested = true; captured = await history(id, { allowEmpty: true });
-            user = [...captured.records].reverse().find((entry) => entry.role === "USER");
-          }
-          if (user?.fragments.some((fragment) => fragment.type === "REQUEST" && fragment.content.includes(expected))) {
-            if (currentId() === id) {
+          const captured = await currentHistory();
+          if (currentId() !== id) continue;
+          const user = [...(captured?.conversationId === id ? captured.records : [])].reverse().find((entry) => entry.role === "USER");
+          const stored = user && (id !== before.sessionId || !before.userMessageIds.has(user.messageId))
+            && user.fragments.some((fragment) => fragment.type === "REQUEST" && normalized(fragment.content).includes(expected));
+          const nodes = messageNodes(); const users = nodes.filter((node) => messageRole(node) === "USER");
+          const latest = users.at(-1);
+          // A user bubble can be optimistic; require a new matching turn with actual assistant output.
+          const onPage = users.length > before.userCount && question && normalized(latest?.textContent).includes(question)
+            && nodes.slice(nodes.indexOf(latest) + 1).some((node) => {
+              if (messageRole(node) !== "ASSISTANT") return false;
+              const content = node.cloneNode(true);
+              content.querySelectorAll('button, [role="button"], .dtw-owned, .dtw-message-meta').forEach((element) => element.remove());
+              return normalized(content.textContent);
+            });
+          if (stored || onPage) {
+            if (stored && currentId() === id) {
               state.lastHistory = captured; state.lastHistoryAt = Date.now();
               renderMessageInfo();
             }
             await send("send-status", { jobId, confirmed: true, sessionId: id,
-              userMessageId: user.messageId, title: captured.title, waitForReply: state.rolloverRunning });
+              userMessageId: stored ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
             if (state.pendingNewProjectId) {
               state.pendingNewProjectId = "";
               state.pendingNewConversationAt = 0;
@@ -887,6 +900,10 @@
     const original = editorText(editor);
     try {
       requireSendAllowed();
+      const initialHistory = await currentHistory();
+      const before = { sessionId: currentId(), userCount: messageNodes().filter((node) => messageRole(node) === "USER").length,
+        userMessageIds: new Set((initialHistory?.records || []).filter((entry) => entry.role === "USER").map((entry) => entry.messageId)),
+        knownSessionIds: new Set([...(state.snapshot?.sessions || []).map((entry) => entry.sessionId), ...nativeLinks().map((link) => idFromHref(link.href))]) };
       setEditor(editor, prompt);
       state.submittedAtMs = Date.now();
       await submit(editor);
@@ -896,7 +913,7 @@
         && node.textContent.includes(prompt.slice(-Math.min(prompt.length, 80))));
       if (sentNode) renderUserMessage(sentNode, { messageId: `pending-${jobId}`,
         fragments: [{ type: "REQUEST", content: prompt }] });
-      const okay = await confirmUserMessage(jobId, prompt.slice(-Math.min(prompt.length, 120)));
+      const okay = await confirmUserMessage(jobId, prompt, before);
       if (!okay) showToast("发送结果不明，原始草稿已保存在作业记录中，请核对会话", 6000);
       return okay;
     } catch (error) {

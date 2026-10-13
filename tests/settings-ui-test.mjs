@@ -321,9 +321,9 @@ ${backgroundSource}
   const historySource = await fs.readFile(path.join(root, "core/logic/history-core.js"), "utf8");
   const contentSource = (await fs.readFile(path.join(root, "core/content/workbench.js"), "utf8"))
     .replace("  injectPageHook();", "")
-    .replace('  const currentId = () => idFromHref(location.href);', '  const currentId = () => "message-edit-session";')
+    .replace('  const currentId = () => idFromHref(location.href);', '  const currentId = () => globalThis.fixtureRoute ?? "message-edit-session";')
     .replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));',
-      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMemoryEditors, findEditor, observeMessageDisplay, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount };");
+      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMemoryEditors, findEditor, observeMessageDisplay, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount, confirmUserMessage, doProjectSend };");
   const messageDisplay = await evaluate(page, `(()=>{
     const addListener=chrome.runtime.onMessage.addListener;
     chrome.runtime.onMessage.addListener=fn=>globalThis.contentMessageListener=fn;
@@ -488,6 +488,75 @@ ${backgroundSource}
     assert.equal(row.composer,'新的草稿');assert.equal(row.pending,false);assert.equal(row.contexts,0,
       '取消编辑后在下一次绘制前清除隐藏记忆的临时提交上下文');
   }
+  const localSendChecks = await evaluate(page, `(async()=>{
+    const fixture=messageDisplayFixture;const {state}=fixture;
+    const originalSend=chrome.runtime.sendMessage;
+    const host=document.createElement('section');document.body.append(host);
+    const requests=[];let historyRequests=0;let nativeSends=0;
+    const onHistory=()=>historyRequests++;
+    window.addEventListener('dtw:history-request',onHistory);
+    const prompt='<project_memory>\\n## 个人记忆\\n### 偏好\\n1. 使用中文\\n</project_memory>\\n\\n<current_question>\\n同一个问题\\n第二行\\n</current_question>';
+    const userRecord={messageId:1,role:'USER',fragments:[{type:'REQUEST',content:prompt}]};
+    const node=(role,text)=>{const element=document.createElement('div');element.dataset.messageAuthorRole=role;
+      element.textContent=text;host.append(element);return element;};
+    const before={sessionId:'message-edit-session',userCount:1,userMessageIds:new Set([1]),knownSessionIds:new Set()};
+    const results={};
+    try {
+      state.accountId='ui-test-account';state.networkIssue=null;state.pendingNewProjectId='';
+      state.snapshot={settings:{showPersonalMemory:false,showProjectMemory:false},sessions:[],memberships:[],projects:[],jobs:[]};
+      state.lastHistory={conversationId:'message-edit-session',title:'本地确认测试',records:[userRecord]};state.lastHistoryAt=Date.now();
+      chrome.runtime.sendMessage=async message=>{requests.push(message);
+        if(message.type==='dtw:session-history')return {ok:true,history:state.lastHistory};
+        return {ok:true};};
+      const editor=document.createElement('textarea');editor.id='chat-input';host.append(editor);
+      const old=node('user',prompt);node('assistant','上次的回答');
+      old.replaceWith(old.cloneNode(true));
+      results.oldTurn=await fixture.confirmUserMessage('old-turn',prompt,before,20);
+      const pending=node('user',prompt);fixture.renderUserMessage(pending,userRecord);
+      editor.value='';
+      const stop=document.createElement('button');stop.setAttribute('aria-label','停止生成');host.append(stop);
+      results.optimistic=await fixture.confirmUserMessage('optimistic',prompt,before,20);
+      const emptyAnswer=node('assistant','');const copy=document.createElement('button');copy.textContent='复制';emptyAnswer.append(copy);
+      results.controlsOnly=await fixture.confirmUserMessage('controls',prompt,before,20);emptyAnswer.remove();
+      const answer=node('assistant','正在回答本轮问题');
+      results.dom=await fixture.confirmUserMessage('dom',prompt,before,100);
+      results.domMessageId=requests.find(message=>message.jobId==='dom')?.userMessageId??null;
+      answer.remove();stop.remove();
+      state.lastHistory.records.push({...userRecord,messageId:3});
+      results.stored=await fixture.confirmUserMessage('stored',prompt,before,100);
+      results.storedMessageId=requests.find(message=>message.jobId==='stored')?.userMessageId;
+      results.knownRoute=await fixture.confirmUserMessage('known-route',prompt,
+        {...before,sessionId:'',userCount:0,knownSessionIds:new Set(['message-edit-session'])},20);
+      const localSend=chrome.runtime.sendMessage;state.lastHistoryAt=0;
+      chrome.runtime.sendMessage=async message=>{const result=await localSend(message);
+        if(message.type==='dtw:session-history')globalThis.fixtureRoute='unrelated-session';return result;};
+      results.changedRoute=await fixture.confirmUserMessage('changed-route',prompt,before,20);
+      chrome.runtime.sendMessage=localSend;delete globalThis.fixtureRoute;
+      host.replaceChildren(editor);editor.value='原始草稿';state.lastHistory=null;state.lastHistoryAt=0;
+      globalThis.fixtureRoute='';
+      const button=document.createElement('button');button.className='ds-button--primary ds-button--circle';host.append(button);
+      button.onclick=()=>{nativeSends++;globalThis.fixtureRoute='new-local-send';node('user',editor.value);
+        node('assistant','收到');editor.value='';};
+      results.newChat=await fixture.doProjectSend(editor,prompt,'new-chat');
+      results.newChatSession=requests.find(message=>message.jobId==='new-chat')?.sessionId;
+      results.nativeSends=nativeSends;
+      results.noHistoryRequest=historyRequests===0 && !requests.some(message=>message.type==='dtw:history-request-slot');
+      results.noRetry=requests.filter(message=>message.type==='dtw:send-status' && message.confirmed).length===3;
+    } finally {
+      delete globalThis.fixtureRoute;host.remove();window.removeEventListener('dtw:history-request',onHistory);
+      chrome.runtime.sendMessage=originalSend;
+    }
+    return results;
+  })()`);
+  assert.equal(localSendChecks.oldTurn,false,'旧的同文消息及 DOM 重挂载不能确认本轮发送');
+  assert.equal(localSendChecks.optimistic,false,'气泡、清空输入和停止按钮不足以确认服务端已接收');
+  assert.equal(localSendChecks.controlsOnly,false,'助手操作按钮不能充当实际回复');
+  assert.equal(localSendChecks.knownRoute,false,'跳到已有会话不能当作本次新会话发送');
+  assert.equal(localSendChecks.changedRoute,false,'异步读取本地记录期间切换页面不能确认到错误的会话');
+  for (const key of ['dom','stored','newChat','noHistoryRequest','noRetry'])assert.equal(localSendChecks[key],true,key);
+  assert.equal(localSendChecks.domMessageId,null,'本地页面确认不伪造消息 ID');
+  assert.equal(localSendChecks.storedMessageId,3);
+  assert.equal(localSendChecks.newChatSession,'new-local-send');assert.equal(localSendChecks.nativeSends,1);
   const restrictionChecks = await evaluate(page, `(async()=>{
     const fixture=messageDisplayFixture;const {state}=fixture;
     const sendMessage=chrome.runtime.sendMessage;const storage=chrome.storage.local;
@@ -580,7 +649,7 @@ ${backgroundSource}
   }
   assert.equal(restrictionChecks.normalSends,1);assert.equal(restrictionChecks.blockedSends,1,'禁言后不得触发原生发送');
   assert.equal(restrictionChecks.delayedSends,1,'等待发送按钮期间出现禁言也必须停止');
-  console.log(JSON.stringify({ ok: true, checks: "settings, memory editing, mute detection and blocked sends in local DOM", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
+  console.log(JSON.stringify({ ok: true, checks: "settings, memory editing, local send confirmation, mute detection and blocked sends in local DOM", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();
