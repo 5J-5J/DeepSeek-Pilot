@@ -2,9 +2,9 @@
 
 # DeepSeek Pilot
 
-**New chat. Keep going.**
+**Less catching up. More moving forward.**
 
-Projects, personal and project memory, and conversation continuity for DeepSeek on the web.
+Starting with projects and memory, working toward one chat to review progress and decide what comes next.
 
 [简体中文](README.md) · English
 
@@ -18,7 +18,7 @@ Projects, personal and project memory, and conversation continuity for DeepSeek 
 
 DeepSeek Pilot is a third-party browser extension that enhances the DeepSeek website. Organize related chats into projects, maintain personal preferences and project decisions as editable memories, and bring that context into your next conversation.
 
-> **0.9.0 is an early development version**, installed through developer mode. This independent project is not affiliated with DeepSeek. The image above is a concept diagram, not a product screenshot.
+> **0.9.0 is an early development version**, installed through developer mode. This independent project is not affiliated with DeepSeek. A unified work chat is a future direction; today you work through projects and their conversations. The image above illustrates the existing foundations, not a product screenshot.
 
 ## Why Pilot
 
@@ -115,26 +115,35 @@ flowchart LR
 
 ## About this project
 
-DeepSeek Pilot aims to connect isolated questions into a personal workspace where work can continue: projects have goals, conversations have context, important decisions accumulate, and a new chat can pick up where you left off.
+A few projects can leave you with dozens of chats. Coming back means piecing together what was decided, what is blocked, and what to do next.
 
-The current version provides the foundations: project organization, personal and project memory, and conversation continuation. Automatic classification is temporarily disabled; assign chats manually.
+DeepSeek Pilot aims to bring those threads into one work chat. Ask “How are my projects doing?” or “What should I work on today?”, review progress and suggestions grounded in saved records, then choose a project to continue. Project lists and original conversations remain accessible so summaries can be checked.
+
+Project organization, personal and project memory, and conversation continuation provide the foundations today. **The unified entry point, cross-project progress view and next-step recommendations are not implemented yet.** Automatic classification is also temporarily disabled; assign chats manually.
 
 ## Future goals
 
-These are product directions, not shipped features. Goals and exploratory ideas will be prioritized based on feedback, without fixed release dates.
+The experience we want to work toward (a concept, not a current feature demo):
 
-| Direction | Features we want to add | Value |
+> **You:** I have half an hour today. Which project should I move forward?
+>
+> **Pilot:** Your saved notes say the portfolio still needs case descriptions, while the reading plan is waiting for you to choose papers. You could draft one case description first. Continue the portfolio?
+>
+> **You:** Yes, use the structure we agreed on.
+>
+> **Pilot:** Shows the portfolio's last confirmed structure and next step for you to check before continuing.
+
+Suggestions should use available project records and the time or priorities you provide. Missing progress should prompt a question, not a fabricated completion claim. You choose what to pursue; Pilot helps you spend less time recovering context.
+
+| Milestone | Planned capability | What it would enable |
 | --- | --- | --- |
-| Project knowledge | Attach reference material, notes and reusable context; select relevant content for a question | Avoid repeatedly pasting project background |
-| Traceable memory | Sources, change history, conflict review, confirmation and rollback | Understand changes and correct misunderstandings |
-| Per-chat memory controls | Temporary chats and separate controls for injection and learning | Keep one-off questions out of lasting context |
-| Smoother continuation | Preview summaries and inherited context; link old and new chats | Know what carries over into the next conversation |
-| Project overview | Summarize goals, decisions, progress and next steps for manual confirmation | Resume a project with less effort |
-| Search and organization | Cross-chat search, memory search, bulk moves and controllable automatic classification | Find information as the workspace grows |
-| Reusable workflows | Project templates, saved prompts and context presets | Start recurring writing, learning and development work faster |
-| Easier adoption | Versioned install archives, onboarding, English UI and exploration of browser-store distribution | Simplify installation and updates |
+| 1 · Understand one project | Progress summaries, decisions, blockers and next steps, with sources and update times | Find where work stopped and correct outdated information |
+| 2 · See projects in one place | A unified work chat with concise project cards or summaries | Ask how several projects are doing from one input |
+| 3 · Discuss the next step | Explain suggestions based on goals, blockers, recorded priorities and available time | Ask what to work on today, then choose or adjust the suggestion |
+| 4 · Continue the selected project | Recognize explicit project choices and preview context; clarify ambiguous references | Move from overview to focused work with less manual navigation |
+| 5 · Bring progress back | Propose updates from subsequent discussions, confirm before saving, retain sources and change history | Keep project overviews connected to ongoing work |
 
-Project knowledge, overviews and templates are exploratory directions. They do not imply current support for file retrieval, task execution or multiple AI platforms.
+This roadmap will be validated incrementally, without fixed release dates. Memory accuracy, separation between projects and long-chat continuation remain supporting work. Reference materials, templates and broader distribution can follow as needed. One entry point does not mean cramming all history into an unlimited conversation or promising to finish projects autonomously.
 
 ## Data and boundaries
 

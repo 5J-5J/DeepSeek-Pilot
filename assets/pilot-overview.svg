@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
-  <title id="title">DeepSeek Pilot — New chat. Keep going.</title>
+  <title id="title">DeepSeek Pilot — Less catching up. More moving forward.</title>
   <desc id="desc">Concept diagram, not a product screenshot. Projects organize conversations, personal and project memories provide context, and the next chat continues the work.</desc>
   <defs>
     <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1830"/><stop offset="1" stop-color="#152c43"/></linearGradient>
@@ -9,7 +9,7 @@
   <g font-family="Segoe UI,Arial,sans-serif">
     <path d="M48 63L85 45L76 82L66 65Z" fill="#61d6c2"/>
     <text x="104" y="76" fill="#fff" font-size="32" font-weight="700">DeepSeek Pilot</text>
-    <text x="48" y="130" fill="#c8d8e9" font-size="23">New chat. Keep going.</text>
+    <text x="48" y="130" fill="#c8d8e9" font-size="23">Less catching up. More moving forward.</text>
     <text x="1150" y="66" text-anchor="end" fill="#91a9c3" font-size="13" letter-spacing="2">WORKFLOW CONCEPT · v0.9.0</text>
     <g fill="#192f49" stroke="#385371">
       <rect x="48" y="175" width="320" height="218" rx="16"/>
