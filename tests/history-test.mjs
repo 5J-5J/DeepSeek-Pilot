@@ -86,6 +86,11 @@ assert.deepEqual(globalThis.DTWHistory.sortSessionsNewestFirst([
   { sessionId: "active", updatedAtMs: 3000, lastMessageAtMs: 3000 },
 ]).map((entry) => entry.sessionId), ["active", "renamed"]);
 
+assert.deepEqual(DTWHistory.sortSessionsNewestFirst([
+  { sessionId: "latest", updatedAtMs: 3000 },
+  { sessionId: "pinned", updatedAtMs: 1000, pinned: true },
+]).map(row => row.sessionId), ["pinned", "latest"]);
+
 assert.throws(() => DTWHistory.parseHistoryResponse({ code: 0, data: {
   biz_code: 100, biz_msg: "Chat session not found", biz_data: null,
 } }, sessionId), (error) => error.code === "SESSION_NOT_FOUND");

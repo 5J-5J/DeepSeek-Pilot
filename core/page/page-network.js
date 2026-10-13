@@ -75,7 +75,8 @@
     if (!Array.isArray(rows)) return;
     const sessions = rows.filter((row) => typeof row?.id === "string" && Number.isFinite(row.updated_at))
       .map((row) => ({ sessionId: row.id, updatedAtMs: Math.round(row.updated_at * 1000),
-        currentMessageId: Number.isInteger(row.current_message_id) ? row.current_message_id : null }));
+        currentMessageId: Number.isInteger(row.current_message_id) ? row.current_message_id : null,
+        ...([0, 1, false, true].includes(row.pinned) ? { pinned: Boolean(row.pinned) } : {}) }));
     if (sessions.length) emit("dtw:session-times", { sessions });
   }
 

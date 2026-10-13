@@ -440,6 +440,7 @@ async function observeSession(accountId, message) {
   if (Number.isFinite(message.createdAtMs) && message.createdAtMs > 0 && message.createdAtMs <= NOW())
     session.createdAtMs = message.createdAtMs;
   if (message.title) { session.title = clean(message.title, 160); session.titleType = "SYSTEM"; }
+  if (typeof message.pinned === "boolean") session.pinned = message.pinned;
   if (Number.isInteger(message.currentMessageId) || message.currentMessageId === null) session.currentMessageId = message.currentMessageId;
   updateSessionClock(session, message.updatedAtMs, message.currentMessageId);
   session.seenAtMs = NOW();
@@ -472,8 +473,11 @@ async function observeSessionTimes(accountId, message) {
     const updatedAtMs = item?.updatedAtMs;
     if (!sessionId || !Number.isFinite(updatedAtMs) || updatedAtMs <= 0 || updatedAtMs > NOW() + 86400000) continue;
     const session = await DB.get("sessions", key(accountId, sessionId));
-    if (!session || session.deleted || updatedAtMs <= (session.updatedAtMs || 0)) continue;
-    updateSessionClock(session, updatedAtMs, item.currentMessageId);
+    if (!session || session.deleted || updatedAtMs < (session.updatedAtMs || 0)) continue;
+    const pinChanged = typeof item.pinned === "boolean" && item.pinned !== Boolean(session.pinned);
+    if (updatedAtMs === session.updatedAtMs && !pinChanged) continue;
+    if (updatedAtMs > (session.updatedAtMs || 0)) updateSessionClock(session, updatedAtMs, item.currentMessageId);
+    if (typeof item.pinned === "boolean") session.pinned = item.pinned;
     await DB.put("sessions", session);
     changed += 1;
   }

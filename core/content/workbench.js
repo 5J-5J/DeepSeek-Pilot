@@ -9,10 +9,10 @@
   const state = { accountId: "", snapshot: null, knownAtStart: new Set(), newSessionIds: new Set(), pendingNewConversationAt: 0, pendingNewKnownIds: new Set(),
     importedIds: new Set(), syncingVisible: false, syncingTimes: false, sessionTimes: new Map(), reportedTips: new Map(), titles: new Map(),
     collapsed: new Set(), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "", newChatMemoryOff: false,
-    menu: null, nativeMenu: null, toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
+    menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
     bypassSend: false, pendingSend: false,
-    submittedAtMs: null, firstOutputAtMs: null, lastHistory: null, lastHistoryAt: 0,
+    submittedAtMs: null, submittedRoute: "", firstOutputAtMs: null, lastHistory: null, lastHistoryAt: 0,
     turn: { route: "", count: 0, text: "", since: 0, generating: false, primed: false } };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const idFromHref = (href) => { try { return new URL(href, location.href).pathname.match(/\/chat\/s\/([^/?#]+)/)?.[1] || ""; } catch { return ""; } };
@@ -28,6 +28,9 @@
     settings: '<path d="m9 3-1 3-3 1-2 3 2 2v3l2 3 3-1 2 2 3-1 1-3 3-1 2-3-2-2V7l-2-3-3 1-2-2Z"/><circle cx="12" cy="11" r="3"/>',
     archive: '<path d="M3 3h18v5H3ZM5 8v13h14V8M9 12h6"/>',
     pin: '<path d="m15 3 6 6-4 1-4 5v3l-7-7h3l5-4ZM3 21l6-6"/>',
+    share: '<path d="M12 3v12m-5-7 5-5 5 5M5 13v8h14v-8"/>',
+    select: '<rect x="3" y="3" width="5" height="5" rx="1"/><rect x="3" y="16" width="5" height="5" rx="1"/><path d="M12 5h9M12 18h9"/>',
+    trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
     move: '<path d="M3 12V5h7l2 3h9v4M3 16h13m-4-4 4 4-4 4"/>',
     remove: '<path d="M3 12V5h7l2 3h9v4M3 17h12M18 15l4 4m0-4-4 4"/>',
     automation: '<rect x="4" y="7" width="16" height="14" rx="3"/><path d="M12 3v4M8 12v2M16 12v2M9 18h6"/>',
@@ -180,8 +183,8 @@
     && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose)); }
   function sessionRows(items) {
     return items.map((session) => `<div class="dtw-session ${currentId() === session.sessionId ? "active" : ""}" data-session="${esc(session.sessionId)}">
-      <button data-action="open-session" data-id="${esc(session.sessionId)}" title="${esc(session.title || "新会话")}">${esc(session.title || "新会话")}</button>
-      ${["USER", "AUTOMATION"].includes(session.purpose) ? `<button class="dtw-session-menu dtw-row-action" data-action="session-menu" data-id="${esc(session.sessionId)}" aria-label="${esc(session.title || "新会话")}的操作" aria-haspopup="menu">${icon("more")}</button>` : ""}
+      <button data-action="${state.selectedSessions ? "select-session" : "open-session"}" data-id="${esc(session.sessionId)}" ${state.selectedSessions ? `role="checkbox" aria-checked="${state.selectedSessions.has(session.sessionId)}"` : ""} title="${esc(session.title || "新会话")}">${state.selectedSessions ? `<span aria-hidden="true">${state.selectedSessions.has(session.sessionId) ? "☑" : "☐"}</span> ` : ""}${esc(session.title || "新会话")}</button>${session.pinned ? icon("pin", "dtw-pinned") : ""}
+      ${!state.selectedSessions && ["USER", "AUTOMATION"].includes(session.purpose) ? `<button class="dtw-session-menu dtw-row-action" data-action="session-menu" data-id="${esc(session.sessionId)}" aria-label="${esc(session.title || "新会话")}的操作" aria-haspopup="menu">${icon("more")}</button>` : ""}
     </div>`).join("");
   }
   let automationHelpButton = null;
@@ -203,8 +206,8 @@
     const unassigned = { id: "unassigned", title: "未归类", items: user.filter((item) => !membership(item.sessionId)?.projectId) };
     const suggestions = state.snapshot.jobs.filter((job) => job.type === "CLASSIFY" && job.status === "NEEDS_REVIEW" && job.result?.choice === "NEW");
     const alertCount = state.snapshot.alerts?.count || 0;
-    const contentKey = JSON.stringify([currentId(), alertCount, [...groups, unassigned].map((group) => ({ ...group,
-      items: group.items.map(({ sessionId, title, purpose }) => ({ sessionId, title, purpose })) })), suggestions]);
+    const contentKey = JSON.stringify([currentId(), alertCount, state.selectedSessions && [...state.selectedSessions], [...groups, unassigned].map((group) => ({ ...group,
+      items: group.items.map(({ sessionId, title, purpose, pinned }) => ({ sessionId, title, purpose, pinned })) })), suggestions]);
     if (tree.dtwContentKey === contentKey) { hideNativeSessions(list); return; }
     tree.dtwContentKey = contentKey;
     const focused = tree.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
@@ -221,7 +224,7 @@
     const focusedHelp = document.activeElement === automationHelpButton;
     if (automationHelpButton) document.getElementById(automationHelpButton.getAttribute("aria-describedby"))?.hidePopover();
     tree.innerHTML = `<div class="dtw-tools"><button class="dtw-section-title" data-action="collapse" data-id="__projects__" aria-expanded="${!state.collapsed.has("__projects__")}">项目${icon("chevron", "dtw-section-caret")}</button><button class="dtw-row-action" data-action="create-project" title="新建项目" aria-label="新建项目">${icon("plus")}</button><button class="dtw-row-action ${alertCount ? "has-alert" : ""}" data-action="open-options" title="${alertCount ? `${alertCount} 项问题需要处理` : "设置"}" aria-label="${alertCount ? `设置，${alertCount} 项问题需要处理` : "设置"}">${icon("settings")}${alertCount ? `<span class="dtw-alert-dot" aria-hidden="true"></span>` : ""}</button></div>
-      <div class="dtw-projects dtw-group-body ${state.collapsed.has("__projects__") ? "is-collapsed" : ""}" ${state.collapsed.has("__projects__") ? 'inert aria-hidden="true"' : 'aria-hidden="false"'}><div class="dtw-group-items">
+      ${state.selectedSessions ? `<div class="dtw-selection-tools"><span>已选 ${state.selectedSessions.size} 项</span><button data-action="delete-selected" ${state.selectedSessions.size ? "" : "disabled"}>删除</button><button data-action="cancel-selection">取消</button></div>` : ""}<div class="dtw-projects dtw-group-body ${state.collapsed.has("__projects__") ? "is-collapsed" : ""}" ${state.collapsed.has("__projects__") ? 'inert aria-hidden="true"' : 'aria-hidden="false"'}><div class="dtw-group-items">
       ${suggestions.map((job) => `<div class="dtw-suggestion">建议新建「${esc(job.result.suggestedName)}」<div><button data-action="accept-suggestion" data-id="${esc(job.jobId)}">创建并移入</button><button data-action="reject-suggestion" data-id="${esc(job.jobId)}">忽略</button></div></div>`).join("")}
       ${groups.map(groupHtml).join("")}</div></div>${groupHtml(unassigned)}`;
     const helpSlot = tree.querySelector(".dtw-automation-help");
@@ -239,15 +242,15 @@
     if (focused) [...tree.querySelectorAll("[data-action]")].find((button) => button.dataset.action === focused.action && button.dataset.id === focused.id)?.focus({ preventScroll: true });
     // Keep DSW's React nodes mounted so native navigation and menus still work.
     hideNativeSessions(list);
-    if (state.menu && !state.menu.anchor.isConnected) closeMenu();
-    if (state.nativeMenu && !state.nativeMenu.anchor.isConnected) {
-      const anchor = [...tree.querySelectorAll(".dtw-session-menu")].find((node) => node.dataset.id === state.nativeMenu.id);
-      if (anchor) { state.nativeMenu.anchor = anchor; anchor.setAttribute("aria-expanded", "true"); syncNativeMenu(); }
-      else closeNativeMenu(true);
+    if (state.menu && !state.menu.anchor.isConnected) {
+      const action = state.menu.kind === "project" ? "project-menu" : "session-menu";
+      const anchor = [...tree.querySelectorAll("[data-action]")].find((node) => node.dataset.action === action && node.dataset.id === state.menu.id);
+      if (anchor) { state.menu.anchor = anchor; anchor.setAttribute("aria-expanded", "true"); positionMenu(root.querySelector(".dtw-menu"), anchor); }
+      else closeMenu();
     }
   }
   function toggleGroup(id, collapsed = !state.collapsed.has(id)) {
-    closeMenu(); closeNativeMenu(true);
+    closeMenu();
     collapsed ? state.collapsed.add(id) : state.collapsed.delete(id);
     const tree = document.querySelector(".dtw-tree");
     const group = id === "__projects__" ? tree?.querySelector(".dtw-projects")
@@ -345,6 +348,10 @@
     }
     requireSendAllowed();
     if (!sendEnabled(button)) throw new Error(button ? "DeepSeek 发送按钮未启用" : "找不到 DeepSeek 发送按钮");
+    const nodes = messageNodes();
+    state.submittedAtMs ??= Date.now(); state.submittedRoute = currentId();
+    Object.assign(state.turn, { route: currentId(), count: nodes.length, text: nodes.at(-1) ? nodeText(nodes.at(-1)) : "",
+      since: Date.now(), generating: false, primed: true });
     state.bypassSend = true;
     try { button.click(); } finally { state.bypassSend = false; }
   }
@@ -594,27 +601,42 @@
     const parts = nodes.slice(first, last + 1).map((part, index) => ({ node: part, original: part.nodeValue,
       display: index === 0 ? shown : "" }));
     for (const part of parts) part.node.nodeValue = part.display;
-    visibleUserMessages.set(node, { messageId: record.messageId, shown, parts });
+    visibleUserMessages.set(node, { messageId: record.messageId, original, shown, parts });
+  }
+  function userMessageText(node) {
+    const prior = visibleUserMessages.get(node);
+    if (prior?.parts.every((part) => node.contains(part.node) && part.node.nodeValue === part.display)) return prior.original;
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll("button,[role=button],.dtw-owned").forEach((item) => item.remove());
+    return clone.textContent.trim();
   }
   function renderMessageInfo() {
     const sessionId = currentId();
-    if (!state.lastHistory || state.lastHistory.conversationId !== sessionId) return false;
+    if (!state.snapshot) return false;
     const showMetadata = Boolean(membership(sessionId)?.projectId);
-    const isUserSession = state.snapshot?.sessions.some((item) => item.sessionId === sessionId && item.purpose === "USER");
-    const records = state.lastHistory.records;
+    const records = state.lastHistory?.conversationId === sessionId ? state.lastHistory.records : [];
     const byId = new Map(records.map((entry) => [entry.messageId, entry]));
-    const branch = []; let id = state.lastHistory.currentMessageId; const seen = new Set();
+    const branch = []; let id = state.lastHistory?.conversationId === sessionId ? state.lastHistory.currentMessageId : null; const seen = new Set();
     while (Number.isInteger(id) && byId.has(id) && !seen.has(id)) { seen.add(id); branch.push(byId.get(id)); id = byId.get(id).parentId; }
     branch.reverse();
     const nodes = messageNodes();
-    if (nodes.length !== branch.length) return false;
     const labels = new Set(); const memoryPanels = new Set();
+    const normalize = (text) => String(text).replace(/\s+/g, "");
+    let aligned = true;
     for (let index = 0; index < nodes.length; index++) {
-      const record = branch[index]; const node = nodes[index];
-      if (record.role === "USER" && isUserSession) renderUserMessage(node, record);
+      const node = nodes[index]; const role = messageRole(node); let record = branch[index];
+      const original = role === "USER" ? userMessageText(node) : "";
+      const question = (text) => DTWMemoryDisplay.visibleText(text, false, false) ?? text;
+      aligned &&= record?.role === role && (role !== "USER" || normalize(question(original)) === normalize(question(DTWHistory.fragmentText(record))));
+      if (!aligned) record = null;
+      // Visibility uses the bubble itself, even before a new message reaches the history cache.
+      if (role === "USER" && !automationSession(sessionId)) renderUserMessage(node,
+        DTWMemoryDisplay.visibleText(original, false, false) !== null
+          ? { messageId: record?.messageId ?? `visible_${index}`, fragments: [{ type: "REQUEST", content: original }] }
+          : record || { messageId: `visible_${index}`, fragments: [{ type: "REQUEST", content: original }] });
       const panel = visibleMemoryPanels.get(node);
       if (panel?.isConnected) memoryPanels.add(panel);
-      if (!showMetadata) continue;
+      if (!showMetadata || !record || (role === "ASSISTANT" && index === nodes.length - 1 && isGenerating())) continue;
       const anchor = panel?.isConnected ? panel : node;
       let label = anchor.nextElementSibling?.classList.contains("dtw-message-meta")
         ? anchor.nextElementSibling : node.querySelector(":scope > .dtw-message-meta");
@@ -630,14 +652,14 @@
     }
     document.querySelectorAll(".dtw-message-meta").forEach((label) => { if (!labels.has(label)) label.remove(); });
     document.querySelectorAll(".dtw-visible-memory").forEach((panel) => { if (!memoryPanels.has(panel)) panel.remove(); });
-    return true;
+    return records.length > 0 && nodes.length === branch.length && aligned;
   }
   function observeMessageDisplay() {
     const observer = new MutationObserver((mutations) => {
-      if (!state.snapshot || state.lastHistory?.conversationId !== currentId()) return;
-      const users = messageNodes().filter((node) => messageRole(node) === "USER");
-      if (!mutations.some((mutation) => users.some((node) => node.contains(mutation.target)
-        || [...mutation.addedNodes].some((added) => added.contains(node))))) return;
+      if (!state.snapshot) return;
+      const nodes = messageNodes();
+      if (!mutations.some((mutation) => nodes.some((node) => node.contains(mutation.target)
+        || [...mutation.addedNodes, ...mutation.removedNodes].some((added) => added.contains(node))))) return;
       // Reapply visibility before paint when React restores a message after editing.
       renderMemoryEditors();
       if (renderMessageInfo()) state.messageInfoPending = false;
@@ -669,7 +691,8 @@
   async function syncSessionTimes() {
     if (!state.accountId || !state.snapshot || state.syncingTimes) return;
     const known = new Map(state.snapshot.sessions.filter((session) => !session.deleted).map((session) => [session.sessionId, session]));
-    const sessions = [...state.sessionTimes].filter(([id, item]) => known.has(id) && item.updatedAtMs > (known.get(id).updatedAtMs || 0))
+    const sessions = [...state.sessionTimes].filter(([id, item]) => known.has(id) && (item.updatedAtMs > (known.get(id).updatedAtMs || 0)
+      || item.updatedAtMs === known.get(id).updatedAtMs && typeof item.pinned === "boolean" && item.pinned !== Boolean(known.get(id).pinned)))
       .map(([sessionId, item]) => ({ sessionId, ...item }));
     if (!sessions.length) return;
     state.syncingTimes = true;
@@ -818,7 +841,10 @@
         }
       }
       state.newChatMemoryOff = false;
-      Object.assign(watch, { route, count: 0, text: "", since: Date.now(), generating: false, primed: false });
+      const submitted = Boolean(state.submittedAtMs && (state.submittedRoute === route
+        || !state.submittedRoute && state.newSessionIds.has(route)));
+      Object.assign(watch, { route, count: 0, text: "", since: Date.now(), generating: submitted, primed: submitted });
+      if (submitted) state.dirtySessions.add(route);
     }
     if (!route) return;
     const nodes = messageNodes(); const last = nodes.at(-1); const text = last ? nodeText(last) : "";
@@ -827,8 +853,17 @@
       if (state.submittedAtMs && text && last?.matches?.('div.ds-message,[data-message-author-role="assistant"]') && !state.firstOutputAtMs)
         state.firstOutputAtMs = Date.now(); return; }
     if (nodes.length !== watch.count || text !== watch.text) {
-      if (watch.primed && (text.length > watch.text.length || nodes.length - watch.count === 2)) watch.generating = true;
+      if (watch.primed && (text.length > watch.text.length || nodes.length - watch.count === 2)) {
+        watch.generating = true; state.dirtySessions.add(route);
+      }
       watch.count = nodes.length; watch.text = text; watch.since = Date.now(); watch.primed = true; return;
+    }
+    if (!watch.generating && text && Date.now() - watch.since >= 2500 && membership(route)?.projectId
+      && !state.historyRecovery.has(route) && !renderMessageInfo() && !state.snapshot.settings.automationPaused && !state.networkIssue) {
+      state.historyRecovery.add(route);
+      // Recover missing metadata once after native loading settles; send confirmation remains local.
+      try { await saveObservedHistory(route, await history(route, { allowEmpty: true, userAction: false })); }
+      catch (error) { showToast(`消息 token 同步失败：${error.message}`, 6500); }
     }
     if (!watch.generating || !text || Date.now() - watch.since < 2500) return;
     watch.generating = false;
@@ -1050,29 +1085,11 @@
     menu?.anchor.setAttribute("aria-expanded", "false");
     if (focus) menu?.anchor.focus({ preventScroll: true });
   }
-  function closeNativeMenu(dismiss = false) {
-    const current = state.nativeMenu;
-    if (!current) return;
-    state.nativeMenu = null;
-    clearTimeout(current.timer);
-    current.observer?.disconnect();
-    // DeepSeek closes this dropdown by toggling its trigger, not by synthetic Escape.
-    if (dismiss && (!current.menu || current.menu.isConnected && current.menu.getBoundingClientRect().height > 0)) current.trigger.click();
-    current.menu?.querySelector(".dtw-menu-extras")?.remove();
-    current.menu?.classList.remove("dtw-native-menu");
-    current.positioner?.classList.remove("dtw-menu-positioner");
-    current.positioner?.style.removeProperty("--dtw-menu-left");
-    current.positioner?.style.removeProperty("--dtw-menu-top");
-    for (const [node, className] of current.sources) node.classList.remove(className);
-    for (const key of ["--dtw-source-left", "--dtw-source-top", "--dtw-source-width", "--dtw-source-height"])
-      current.source.style.removeProperty(key);
-    current.anchor.setAttribute("aria-expanded", "false");
-  }
   function menuItem(action, id, label, symbol, extra = "") {
-    return `<button class="dtw-menu-item" role="menuitem" data-action="${action}" data-id="${esc(id)}" ${extra}>${icon(symbol)}<span>${esc(label)}</span></button>`;
+    return `<button class="dtw-menu-item ${action === "session-delete" ? "dtw-menu-danger" : ""}" role="menuitem" data-action="${action}" data-id="${esc(id)}" ${extra}>${icon(symbol)}<span>${esc(label)}</span></button>`;
   }
   function openMenu(kind, id, anchor) {
-    closeMenu(); closeNativeMenu(true);
+    closeMenu();
     state.menu = { kind, id, anchor };
     anchor.setAttribute("aria-expanded", "true");
     const box = document.createElement("div");
@@ -1085,7 +1102,10 @@
       state.pickerSessionId = id;
       html = `<div class="dtw-menu-label">移到项目</div>${projects().map((project) => menuItem("move-to", project.projectId, project.name, "folder", membership(id)?.projectId === project.projectId ? 'aria-current="true"' : "")).join("") || '<div class="dtw-menu-label">暂无项目</div>'}<div role="separator" class="dtw-menu-divider"></div>${menuItem("create-and-move", "", "新建项目", "plus")}${membership(id)?.projectId ? menuItem("move-to", "", "从项目中移除", "remove") : ""}`;
     } else {
-      html = `${menuItem("open-session", id, "打开会话查看原生操作", "compose")}${sessionMenuExtras(id)}`;
+      const selected = state.snapshot.sessions.find((item) => item.sessionId === id);
+      const native = nativeLinks().some((item) => idFromHref(item.href) === id);
+      html = `${menuItem("open-session", id, "打开会话", "compose")}${native ?
+        `${menuItem("session-rename", id, "重命名", "edit")}${menuItem("session-pin", id, selected?.pinned ? "取消置顶" : "置顶", "pin")}${menuItem("session-share", id, "分享", "share")}${menuItem("session-select", id, "多选", "select")}` : ""}<div role="separator" class="dtw-menu-divider"></div>${sessionMenuExtras(id)}${native ? `<div role="separator" class="dtw-menu-divider"></div>${menuItem("session-delete", id, "删除会话", "trash")}` : ""}`;
     }
     box.innerHTML = html; root.append(box); positionMenu(box, anchor);
     box.querySelector("button")?.focus({ preventScroll: true });
@@ -1096,47 +1116,58 @@
     if (selected?.purpose === "AUTOMATION") return menuItem("automation-unmark", id, "恢复为普通会话", "back");
     return `${menuItem("open-picker", id, "移到项目", "move")}${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : ""}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
   }
-  function syncNativeMenu() {
-    const current = state.nativeMenu;
-    if (!current) return;
-    const menu = [...document.querySelectorAll('.ds-dropdown-menu, [role="menu"]')].find((node) => !root.contains(node)
-      && node.getBoundingClientRect().height > 0 && /重命名|删除|分享|rename|delete|share/i.test(node.textContent));
-    if (!menu) { if (current.menu) closeNativeMenu(); return; }
-    if (current.menu !== menu) {
-      current.menu = menu; clearTimeout(current.timer);
-      menu.classList.add("dtw-native-menu");
-      current.positioner = menu.closest(".ds-floating-container") || menu;
-      current.positioner.classList.add("dtw-menu-positioner");
-      const extra = document.createElement("div");
-      extra.className = "dtw-menu-extras dtw-owned";
-      extra.innerHTML = sessionMenuExtras(current.id);
-      for (const button of extra.querySelectorAll("button")) button.classList.add("ds-dropdown-menu-option");
-      menu.append(extra);
-    }
-    positionMenu(current.positioner, current.anchor);
-  }
-  function openSessionMenu(id, anchor) {
-    closeMenu(); closeNativeMenu(true);
+  async function nativeSessionAction(id, action, title) {
+    if (state.nativeActionRunning) return;
     const link = nativeLinks().find((item) => idFromHref(item.href) === id);
     const trigger = link?.querySelector('[role="button"], button');
-    const source = link?.closest("[data-dtw-original-display]");
-    if (!trigger || !source) { openMenu("session", id, anchor); return; }
-    // Give the mounted React trigger real coordinates while its original history stays invisible.
-    const rect = anchor.getBoundingClientRect();
-    for (const [key, value] of [["left", rect.left], ["top", rect.top], ["width", rect.width], ["height", rect.height]])
-      source.style.setProperty(`--dtw-source-${key}`, `${value}px`);
-    const sources = [[source, "dtw-native-menu-source"], [link, "dtw-native-menu-link"], [trigger, "dtw-native-menu-trigger"]];
-    for (const [node, className] of sources) node.classList.add(className);
-    anchor.setAttribute("aria-expanded", "true");
-    const current = state.nativeMenu = { id, anchor, source, sources, trigger, menu: null, positioner: null, timer: 0,
-      observer: new MutationObserver(syncNativeMenu) };
-    // Native dropdowns can be mounted hidden, then opened by changing styles only.
-    current.observer.observe(document.body, { childList: true, subtree: true, characterData: true,
-      attributes: true, attributeFilter: ["style", "class", "hidden", "data-state", "role"] });
-    current.timer = setTimeout(() => {
-      if (state.nativeMenu === current && !current.menu) { closeNativeMenu(true); openMenu("session", id, current.anchor); }
-    }, 800);
-    trigger.click(); syncNativeMenu();
+    const source = link?.closest("[data-dtw-original-display]") || link?.parentElement;
+    if (!trigger) throw new Error("请先打开该会话，加载后即可使用改名、置顶、分享、多选和删除");
+    closeMenu();
+    const labels = { rename: /^(重命名|rename)$/i, pin: /置顶|^(?:un)?pin$/i,
+      share: /^(分享|share)$/i, select: /^(多选|select|multi.?select)$/i, delete: /^(删除|delete)$/i };
+    state.nativeActionRunning = true;
+    // Keep DSW's action handlers and dialogs; its dropdown is never shown to the user.
+    document.documentElement.classList.add("dtw-native-action");
+    let menu; let invoked = false;
+    try {
+      trigger.click();
+      for (let attempt = 0; attempt < 100; attempt++) {
+        menu = [...document.querySelectorAll('.ds-dropdown-menu, [role="menu"]')].find((node) => !node.closest(".dtw-owned")
+          && node.getBoundingClientRect().height > 0 && /重命名|rename/i.test(node.textContent));
+        const entry = menu && [...menu.querySelectorAll('.ds-dropdown-menu-option,[role="menuitem"],button')]
+          .find((node) => labels[action]?.test(node.textContent.trim()));
+        if (entry) {
+          menu.classList.add("dtw-native-action-menu");
+          const pinned = action === "pin" && !/取消|unpin/i.test(entry.textContent);
+          entry.click(); invoked = true;
+          if (action === "rename") {
+            let editor;
+            for (let wait = 0; wait < 100; wait++) {
+              editor = [...source.querySelectorAll('input[type="text"],input:not([type])')].find((node) => !node.disabled);
+              if (editor) break;
+              await delay(20);
+            }
+            if (!editor) throw new Error("找不到 DeepSeek 的改名输入框，请刷新页面后重试");
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(editor, title);
+            editor.dispatchEvent(new Event("input", { bubbles: true }));
+            editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+            editor.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+          }
+          if (action === "pin") {
+            const clock = state.sessionTimes.get(id); if (clock) clock.pinned = pinned;
+            await send("session-observe", { sessionId: id, pinned }); await refresh();
+          }
+          break;
+        }
+        await delay(20);
+      }
+      if (!invoked) throw new Error("未找到 DeepSeek 的会话操作，请刷新页面后重试");
+    } finally {
+      if (!invoked) trigger.click();
+      document.documentElement.classList.remove("dtw-native-action");
+      setTimeout(() => { if (menu?.getAttribute("role") !== "menu" || !menu?.isConnected) menu?.classList.remove("dtw-native-action-menu"); }, 250);
+      state.nativeActionRunning = false;
+    }
   }
   function renderModal() {
     let box = root.querySelector(".dtw-modal");
@@ -1147,7 +1178,7 @@
     const canMarkAutomation = selected?.purpose === "USER" && !membership(selected.sessionId)?.projectId
       && !membership(selected.sessionId)?.memoryModeEnabled;
     const nativeMenu = state.pickerSessionId === NEW_CHAT ? ""
-      : `<button data-action="native-menu" data-id="${esc(state.pickerSessionId)}">DSW 原生操作（改名、置顶、删除）</button>`;
+      : `<button data-action="show-session-menu" data-id="${esc(state.pickerSessionId)}">会话操作</button>`;
     box.innerHTML = `<div class="dtw-dialog"><header><strong>${selected?.purpose === "AUTOMATION" ? "自动化会话" : "选择项目"}</strong><button data-action="close-modal" aria-label="关闭">×</button></header>
       <div class="dtw-picker-list">${selected?.purpose === "AUTOMATION"
         ? `<button data-action="automation-unmark" data-id="${esc(selected.sessionId)}">恢复为普通会话（未归类）</button>${nativeMenu}`
@@ -1169,7 +1200,7 @@
     try {
       if (action === "collapse") toggleGroup(id);
       if (action === "open-session") {
-        closeMenu(); closeNativeMenu(true);
+        closeMenu();
         state.pendingNewProjectId = "";
         const link = nativeLinks().find((item) => idFromHref(item.href) === id);
         if (link) link.click();
@@ -1180,33 +1211,51 @@
         }
       }
       if (action === "session-menu") {
-        syncNativeMenu();
-        if (state.nativeMenu?.id === id) closeNativeMenu(true);
-        else if (state.menu?.kind === "session" && state.menu.id === id) closeMenu(true);
-        else openSessionMenu(id, button);
+        if (state.menu?.kind === "session" && state.menu.id === id) closeMenu(true);
+        else openMenu("session", id, button);
       }
-      if (action === "open-picker") {
-        const anchor = state.nativeMenu?.anchor || state.menu?.anchor || button;
-        openMenu("picker", id, anchor);
+      if (action === "session-rename") {
+        closeMenu();
+        const title = prompt("会话名称", state.snapshot.sessions.find((item) => item.sessionId === id)?.title)?.trim();
+        if (title) await nativeSessionAction(id, "rename", title);
       }
-      if (action === "remove-from-project") { closeMenu(); closeNativeMenu(true); await move(id, null); }
+      if (["session-pin", "session-share", "session-delete"].includes(action))
+        await nativeSessionAction(id, action.slice("session-".length));
+      if (action === "session-select") { closeMenu(); state.selectedSessions = new Set([id]); renderTree(); }
+      if (action === "select-session" && state.selectedSessions) {
+        state.selectedSessions.has(id) ? state.selectedSessions.delete(id) : state.selectedSessions.add(id); renderTree();
+      }
+      if (action === "cancel-selection") { state.selectedSessions = null; renderTree(); }
+      if (action === "delete-selected") {
+        const ids = [...(state.selectedSessions || [])];
+        if (!ids.length || !confirm(`删除选中的 ${ids.length} 个会话？此操作无法恢复。`)) return;
+        requireSendAllowed();
+        const requestId = crypto.randomUUID(); const pending = waitEvent("dtw:delete-result", requestId);
+        window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ paused: Boolean(state.snapshot?.settings.automationPaused), issue: state.networkIssue, allowCurrentTask: true }) }));
+        window.dispatchEvent(new CustomEvent("dtw:delete-request", { detail: JSON.stringify({ requestId, accountId: state.accountId, sessionIds: ids }) }));
+        await pending; await send("session-delete", { sessionIds: ids });
+        state.selectedSessions = null; await refresh();
+        if (ids.includes(currentId())) [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "开启新对话")?.click();
+      }
+      if (action === "open-picker") openMenu("picker", id, state.menu?.anchor || button);
+      if (action === "remove-from-project") { closeMenu(); await move(id, null); }
       if (action === "automation-mark" || action === "automation-unmark") {
-        closeMenu(); closeNativeMenu(true);
+        closeMenu();
         await send(action, { sessionId: id });
         state.pickerSessionId = ""; renderModal(); await refresh();
         showToast(action === "automation-mark" ? "已收纳到自动化会话" : "已恢复到未归类");
       }
-      if (action === "native-menu") {
+      if (action === "show-session-menu") {
         state.pickerSessionId = ""; renderModal();
         const anchor = [...document.querySelectorAll('.dtw-session-menu')].find((node) => node.dataset.id === id);
-        if (anchor) openSessionMenu(id, anchor); else showToast("请先展开该会话所在项目");
+        if (anchor) openMenu("session", id, anchor); else showToast("请先展开该会话所在项目");
       }
       if (action === "project-menu") {
         if (state.menu?.kind === "project" && state.menu.id === id) closeMenu(true);
         else openMenu("project", id, button);
       }
       if (action === "project-new-chat") {
-        closeMenu(); closeNativeMenu(true);
+        closeMenu();
         const entry = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "开启新对话");
         if (!entry) throw new Error("找不到 DeepSeek 新对话入口，请刷新页面后重试");
         entry.click();
@@ -1291,10 +1340,6 @@
       }
     } catch (error) { showToast(error.message, 5000); }
   }
-  document.addEventListener("pointerdown", (event) => {
-    // Keep native outside-click handlers from closing the dropdown before our toggle runs.
-    if (event.target.closest?.(".dtw-session-menu")?.closest(".dtw-tree")) event.stopImmediatePropagation();
-  }, true);
   document.addEventListener("click", (event) => {
     const memoryButton = event.target.closest?.(".dtw-memory-button");
     if (memoryButton) {
@@ -1321,7 +1366,6 @@
       items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
       return;
     }
-    if (state.nativeMenu && event.key === "Escape") { const anchor = state.nativeMenu.anchor; closeNativeMenu(true); anchor.focus({ preventScroll: true }); }
     const memoryButton = event.target.closest?.(".dtw-memory-button");
     if (memoryButton && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault(); event.stopImmediatePropagation(); handleAction(memoryButton); return;
@@ -1334,10 +1378,10 @@
     event.preventDefault(); event.stopImmediatePropagation(); memorySend(editor);
   }, true);
   document.addEventListener("scroll", (event) => {
-    if (event.target.closest?.(".dtw-menu, .dtw-native-menu, .dtw-menu-positioner")) return;
-    closeMenu(); closeNativeMenu(true);
+    if (event.target.closest?.(".dtw-menu")) return;
+    closeMenu();
   }, true);
-  window.addEventListener("resize", () => { closeMenu(); closeNativeMenu(true); });
+  window.addEventListener("resize", () => { closeMenu(); });
   chrome.runtime.onMessage.addListener((message, _sender, reply) => {
     if (message?.type === "dtw:automation-delete") {
       if (message.accountId !== state.accountId || state.automationRunning || state.rolloverRunning) {
@@ -1394,6 +1438,7 @@
       const previous = state.sessionTimes.get(item.sessionId);
       if (!previous || item.updatedAtMs >= previous.updatedAtMs) state.sessionTimes.set(item.sessionId, {
         updatedAtMs: item.updatedAtMs, currentMessageId: item.currentMessageId,
+        ...(typeof item.pinned === "boolean" ? { pinned: item.pinned } : {}),
       });
     }
     syncSessionTimes().catch(() => {});
@@ -1445,7 +1490,6 @@
       requestAnimationFrame(() => {
         uiSyncScheduled = false;
         currentRequestIssue();
-        syncNativeMenu();
         syncRoute();
         if (!state.snapshot) return;
         renderMemoryEditors();

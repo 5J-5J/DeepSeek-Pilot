@@ -82,7 +82,7 @@
     return [...sessions].sort((a, b) => {
       const aTime = Number.isFinite(a.lastMessageAtMs) ? a.lastMessageAtMs : (Number.isFinite(a.updatedAtMs) ? a.updatedAtMs : 0);
       const bTime = Number.isFinite(b.lastMessageAtMs) ? b.lastMessageAtMs : (Number.isFinite(b.updatedAtMs) ? b.updatedAtMs : 0);
-      return bTime - aTime || (nativeOrder.get(a.sessionId) ?? Infinity) - (nativeOrder.get(b.sessionId) ?? Infinity)
+      return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || bTime - aTime || (nativeOrder.get(a.sessionId) ?? Infinity) - (nativeOrder.get(b.sessionId) ?? Infinity)
         || String(a.sessionId).localeCompare(String(b.sessionId));
     });
   }

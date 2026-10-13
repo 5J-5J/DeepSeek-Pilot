@@ -323,7 +323,7 @@ ${backgroundSource}
     .replace("  injectPageHook();", "")
     .replace('  const currentId = () => idFromHref(location.href);', '  const currentId = () => globalThis.fixtureRoute ?? "message-edit-session";')
     .replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));',
-      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMemoryEditors, findEditor, observeMessageDisplay, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount, confirmUserMessage, doProjectSend };");
+      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMessageInfo, renderMemoryEditors, findEditor, observeMessageDisplay, checkTurn, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount, confirmUserMessage, doProjectSend, mockHistory(fn) { const previous = history; history = fn; return () => { history = previous; }; } };");
   const messageDisplay = await evaluate(page, `(()=>{
     const addListener=chrome.runtime.onMessage.addListener;
     chrome.runtime.onMessage.addListener=fn=>globalThis.contentMessageListener=fn;
@@ -488,6 +488,46 @@ ${backgroundSource}
     assert.equal(row.composer,'新的草稿');assert.equal(row.pending,false);assert.equal(row.contexts,0,
       '取消编辑后在下一次绘制前清除隐藏记忆的临时提交上下文');
   }
+  const displayWithoutHistory = await evaluate(page, `(async()=>{
+    const fixture=messageDisplayFixture;const {state}=fixture;
+    const host=document.createElement('section');document.body.append(host);
+    const prompt='<project_memory>\\n背景\\n## 个人记忆\\n### 偏好\\n1. 使用中文\\n## 项目记忆：测试\\n### 目标\\n1. 完成文章\\n</project_memory>\\n<current_question>\\n本轮问题\\n</current_question>';
+    state.snapshot={settings:{showPersonalMemory:false,showProjectMemory:false},sessions:[],memberships:[{sessionId:'message-edit-session',projectId:'p'}]};
+    state.lastHistory=null;
+    const observer=fixture.observeMessageDisplay();
+    const make=(role,text)=>{const n=document.createElement('div');n.className=role==='USER'?'d29f3d7d ds-message _63c77b1':'ds-message _63c77b1';
+      const span=document.createElement('span');span.textContent=text;n.append(span);host.append(n);return n;};
+    const user=make('USER',prompt);const answer=make('ASSISTANT','已完成');
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    const noHistory=user.textContent==='本轮问题';
+    state.snapshot.settings.showPersonalMemory=true;fixture.renderMessageInfo();
+    const toggled=user.textContent.includes('使用中文')&&!user.textContent.includes('完成文章');
+    state.snapshot.settings.showPersonalMemory=false;fixture.renderMessageInfo();
+    const records=[{messageId:1,parentId:null,role:'USER',insertedAtMs:100000,accumulatedTokenUsage:120,fragments:[{type:'REQUEST',content:prompt}]},
+      {messageId:2,parentId:1,role:'ASSISTANT',insertedAtMs:100001,accumulatedTokenUsage:180,fragments:[{type:'RESPONSE',content:'已完成'}]}];
+    state.lastHistory={conversationId:'message-edit-session',currentMessageId:2,records};
+    const newUser=make('USER',prompt.replace('本轮问题','第二轮问题'));make('ASSISTANT','正在输出');
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    const pendingHidden=newUser.textContent==='第二轮问题';
+    const prefixTokens=[...host.querySelectorAll('.dtw-message-meta')].map(n=>n.textContent);
+    state.lastHistory={conversationId:'message-edit-session',currentMessageId:4,records:records.concat([
+      {...records[0],messageId:3,parentId:2,accumulatedTokenUsage:200,fragments:[{type:'REQUEST',content:prompt.replace('本轮问题','第二轮问题')}]},
+      {...records[1],messageId:4,parentId:3,accumulatedTokenUsage:260,fragments:[{type:'RESPONSE',content:'正在输出'}]}])};
+    fixture.renderMessageInfo();const finishedTokens=[...host.querySelectorAll('.dtw-message-meta')].map(n=>n.textContent);
+    user.firstChild.textContent='另一个分支的问题';fixture.renderMessageInfo();
+    const wrongBranch=host.querySelectorAll('.dtw-message-meta').length===0;
+    observer.disconnect();host.remove();state.lastHistory=null;
+    return {noHistory,toggled,pendingHidden,prefixTokens,finishedTokens,wrongBranch};
+  })()`);
+  assert.equal(displayWithoutHistory.noHistory,true,'没有历史缓存仍应立即隐藏记忆');
+  assert.equal(displayWithoutHistory.toggled,true,'没有缓存时也能切换个人记忆显示');
+  assert.equal(displayWithoutHistory.pendingHidden,true,'消息数不一致时隐藏刚发送的记忆');
+  assert.equal(displayWithoutHistory.prefixTokens.length,2,'新回复不应移除已有消息 token');
+  assert.match(displayWithoutHistory.prefixTokens[0],/本次 120 tokens.*累计 120 tokens/);
+  assert.match(displayWithoutHistory.prefixTokens[1],/本次 60 tokens.*累计 180 tokens/);
+  assert.equal(displayWithoutHistory.finishedTokens.length,4);
+  assert.match(displayWithoutHistory.finishedTokens[3],/本次 60 tokens.*累计 260 tokens/);
+  assert.equal(displayWithoutHistory.wrongBranch,true,'不能将其他分支的 token 标在当前消息上');
   const localSendChecks = await evaluate(page, `(async()=>{
     const fixture=messageDisplayFixture;const {state}=fixture;
     const originalSend=chrome.runtime.sendMessage;
@@ -557,6 +597,42 @@ ${backgroundSource}
   assert.equal(localSendChecks.domMessageId,null,'本地页面确认不伪造消息 ID');
   assert.equal(localSendChecks.storedMessageId,3);
   assert.equal(localSendChecks.newChatSession,'new-local-send');assert.equal(localSendChecks.nativeSends,1);
+  const fastReplyChecks = await evaluate(page, `(async()=>{
+    const fixture=messageDisplayFixture;const {state}=fixture;const originalSend=chrome.runtime.sendMessage;
+    const host=document.createElement('section');document.body.append(host);const results=[];
+    let reads=0;let completed=0;let captured;
+    const restore=fixture.mockHistory(async()=>{reads++;return captured;});
+    chrome.runtime.sendMessage=async message=>{
+      if(message.type==='dtw:turn-completed')completed++;
+      if(message.type==='dtw:snapshot')return state.snapshot;
+      return {ok:true};
+    };
+    try {
+      for(const fresh of [false,true]) {
+        host.replaceChildren();const route=fresh?'fresh-fast-reply':'existing-fast-reply';
+        globalThis.fixtureRoute=fresh?'':route;state.accountId='ui-test-account';state.lastHistory=null;state.submittedAtMs=null;state.networkIssue=null;
+        state.pendingNewConversationAt=Date.now();state.pendingNewKnownIds=new Set();state.dirtySessions.clear();
+        state.snapshot={settings:{},sessions:[{sessionId:route,purpose:'USER'}],memberships:[],projects:[],jobs:[]};
+        const composer=document.createElement('textarea');composer.id='chat-input';composer.value='快速回复测试';host.append(composer);
+        const send=document.createElement('button');send.textContent='发送';host.append(send);
+        send.onclick=()=>{globalThis.fixtureRoute=route;for(const [role,text] of [['user','快速回复测试'],['assistant','已完成']]){
+          const bubble=document.createElement('div');bubble.dataset.messageAuthorRole=role;bubble.textContent=text;host.append(bubble);
+        }};
+        captured={conversationId:route,currentMessageId:2,records:[{messageId:1,parentId:null,role:'USER',status:'FINISHED',fragments:[{type:'REQUEST',content:'快速回复测试'}]},
+          {messageId:2,parentId:1,role:'ASSISTANT',status:'FINISHED',fragments:[{type:'RESPONSE',content:'已完成'}]}]};
+        const before=reads;await fixture.submit(composer);await fixture.checkTurn();
+        const tracked=state.turn.generating;state.turn.since=Date.now()-3000;await fixture.checkTurn();
+        results.push({fresh,tracked,reads:reads-before,completed});
+      }
+      state.lastHistory=null;state.snapshot.memberships=[{sessionId:globalThis.fixtureRoute,projectId:'p'}];state.historyRecovery.clear();
+      const before=reads;state.turn.since=Date.now()-3000;await fixture.checkTurn();await fixture.checkTurn();
+      results.push({recoveryReads:reads-before});
+    } finally {restore();host.remove();delete globalThis.fixtureRoute;chrome.runtime.sendMessage=originalSend;}
+    return results;
+  })()`);
+  for(const row of fastReplyChecks.filter(row=>'fresh' in row)){assert.equal(row.tracked,true,JSON.stringify(row));assert.equal(row.reads,1,'没有观察到停止按钮的快速回复仍只补读一次历史');}
+  assert.equal(fastReplyChecks[1].completed,2);
+  assert.equal(fastReplyChecks.at(-1).recoveryReads,1,'已有消息缺失 token 缓存时只恢复一次历史');
   const restrictionChecks = await evaluate(page, `(async()=>{
     const fixture=messageDisplayFixture;const {state}=fixture;
     const sendMessage=chrome.runtime.sendMessage;const storage=chrome.storage.local;
@@ -649,7 +725,7 @@ ${backgroundSource}
   }
   assert.equal(restrictionChecks.normalSends,1);assert.equal(restrictionChecks.blockedSends,1,'禁言后不得触发原生发送');
   assert.equal(restrictionChecks.delayedSends,1,'等待发送按钮期间出现禁言也必须停止');
-  console.log(JSON.stringify({ ok: true, checks: "settings, memory editing, local send confirmation, mute detection and blocked sends in local DOM", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
+  console.log(JSON.stringify({ ok: true, checks: "settings, uncached memory visibility, prefix tokens, quick reply sync, local send confirmation, mute detection and blocked sends in local DOM", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();

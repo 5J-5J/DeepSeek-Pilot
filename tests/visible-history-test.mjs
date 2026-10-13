@@ -147,6 +147,12 @@ assert.equal((await request("session-times-observe", { sessions: [
   { sessionId: oldId, updatedAtMs: recent + 2000, currentMessageId: 3 },
 ] })).changed, 1);
 assert.equal((await request("snapshot", {})).sessions.find((s) => s.sessionId === oldId).lastMessageAtMs, recent + 2000);
+await request("session-observe", {sessionId:oldId,pinned:true});
+assert.equal((await request("snapshot", {})).sessions.find(s=>s.sessionId===oldId).pinned,true);
+assert.equal((await request("session-times-observe", {sessions:[{sessionId:oldId,updatedAtMs:recent+2000,pinned:false}]})).changed,1);
+assert.equal((await request("snapshot", {})).sessions.find(s=>s.sessionId===oldId).pinned,false);
+assert.equal((await request("session-times-observe", {sessions:[{sessionId:oldId,updatedAtMs:recent,pinned:true}]})).changed,0);
+assert.equal((await request("snapshot", {})).sessions.find(s=>s.sessionId===oldId).pinned,false);
 assert.equal((await request("open-options", {})).ok, true);
 assert.equal(optionsOpened, 1);
 

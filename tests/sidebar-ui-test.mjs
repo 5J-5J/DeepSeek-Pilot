@@ -50,7 +50,7 @@ async function waitFor(label, get) {
   for (let i = 0; i < 80; i++) { const value = await get(); if (value) return value; await delay(50); }
   throw new Error(`${label}超时`);
 }
-const click = async (action, id = "") => evaluate(`document.querySelector('[data-action="${action}"][data-id="${id}"]').click()`);
+const click = async (action, id) => evaluate(`document.querySelector('[data-action="${action}"]${id === undefined ? "" : `[data-id="${id}"]`}').click()`);
 const pointerClick = async (action, id) => {
   const point = await evaluate(`(()=>{const button=document.querySelector('[data-action="${action}"][data-id="${id}"]');button.scrollIntoView({block:'nearest'});const rect=button.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};})()`);
   await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",...point});
@@ -88,7 +88,7 @@ try {
   await page.call("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/a/chat/s/s1` });
   await waitFor("本地页面", () => evaluate("Boolean(document.querySelector('#native-history'))"));
   await evaluate(`globalThis.fixtureRequests=[];globalThis.fixtureStorage={};globalThis.fixtureNative=[];globalThis.fixtureNewChats=0;
-    globalThis.fixtureOpenTrigger=null;globalThis.fixtureMenuTimer=0;
+    globalThis.fixtureOpenTrigger=null;globalThis.fixtureMenuTimer=0;globalThis.prompt=()=>"插件改名测试";globalThis.confirm=()=>true;
     globalThis.chrome={runtime:{getURL:()=>"data:text/javascript,",onMessage:{addListener(){}},sendMessage:async message=>{
       fixtureRequests.push(message);
       const data=fixture.state.snapshot;
@@ -96,13 +96,15 @@ try {
         const row=data.memberships.find(row=>row.sessionId===message.sessionId);
         row.projectId=message.projectId;
       }
+      if(message.type==='dtw:session-delete')data.sessions.forEach(row=>{if(message.sessionIds.includes(row.sessionId))row.deleted=true});
+      if(message.type==='dtw:session-observe')Object.assign(data.sessions.find(row=>row.sessionId===message.sessionId),message);
       if(message.type==='dtw:project-update')Object.assign(data.projects.find(row=>row.projectId===message.projectId),message);
       return {ok:true};
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
-      globalThis.fixture={state,renderTree,toggleGroup,handleAction,syncNativeMenu,closeNativeMenu,renderModal};
+      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -127,13 +129,17 @@ try {
           floating.style.cssText='position:fixed;left:0;top:0;transform:translate(100px,60px);translate:40px 30px';
           const menu=document.createElement('div');menu.className='ds-dropdown-menu';menu.setAttribute('role','menu');
           menu.style.cssText='position:absolute;left:52px;top:80px;transform:translate(90px,24px);translate:20px 10px;margin:12px';
-          menu.innerHTML=['重命名','置顶','分享','删除'].map(label=>'<button class="ds-dropdown-menu-option '+(label==='删除'?'ds-dropdown-menu-option--error':'')+'" role="menuitem">'+label+'</button>').join('');
-          menu.querySelectorAll('button').forEach(button=>button.onclick=()=>{fixtureNative.push(button.textContent);fixtureOpenTrigger=null;floating.remove();});
+          menu.innerHTML=['重命名',fixture.state.snapshot.sessions.find(s=>s.sessionId===row.href.split('/').at(-1))?.pinned?'取消置顶':'置顶','分享','多选','删除'].map(label=>'<button class="ds-dropdown-menu-option '+(label==='删除'?'ds-dropdown-menu-option--error':'')+'" role="menuitem">'+label+'</button>').join('');
+          menu.querySelectorAll('button').forEach(button=>button.onclick=()=>{fixtureNative.push(button.textContent);fixtureOpenTrigger=null;floating.remove();
+            if(button.textContent==='重命名'){
+              const wrapper=document.createElement('div');const input=document.createElement('input');input.type='text';input.value=row.firstChild.nodeValue;wrapper.append(input);
+              row.replaceWith(wrapper);input.addEventListener('keydown',event=>{if(event.keyCode===13){row.firstChild.nodeValue=input.value;wrapper.replaceWith(row);}});
+            }});
           floating.append(menu);document.body.append(floating);
         },25);
       });
     });
-    new MutationObserver(()=>fixture.syncNativeMenu()).observe(document.body,{childList:true,subtree:true});
+    window.addEventListener('dtw:delete-request',event=>window.dispatchEvent(new CustomEvent('dtw:delete-result',{detail:JSON.stringify({requestId:JSON.parse(event.detail).requestId})})));
     fixture.renderTree();`);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 9);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session.active').length"), 1);
@@ -193,77 +199,41 @@ try {
   assert.equal(await evaluate("document.activeElement.dataset.action"), "project-menu");
   await click("project-menu", "p1"); await click("pin-project", "p1");
   await waitFor("项目置顶", () => evaluate("fixture.state.snapshot.projects[0].pinned===true"));
-  await click("session-menu", "s1");
-  await waitFor("原生菜单追加插件项", () => evaluate("document.querySelector('.ds-dropdown-menu .dtw-menu-extras button')"));
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.ds-dropdown-menu > .ds-dropdown-menu-option')].map(button=>button.textContent)"), ["重命名", "置顶", "分享", "删除"]);
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.ds-floating-container')).transform"), "none", "在原生浮层容器定位，避免叠加位移");
-  assert.equal(await evaluate("Math.round(document.querySelector('.ds-dropdown-menu').getBoundingClientRect().left)"), await evaluate("Math.round(document.querySelector('[data-action=\"session-menu\"][data-id=\"s1\"]').getBoundingClientRect().left)"));
-  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
-  assert.ok(await evaluate("fixtureTriggerRect.width") > 0, "隐藏原生触发器仍获得有效定位");
-  assert.equal(await evaluate("document.querySelectorAll('.dtw-menu-extras').length"), 1);
-  await evaluate("fixture.syncNativeMenu();fixture.syncNativeMenu()");
-  assert.equal(await evaluate("document.querySelectorAll('.dtw-menu-extras').length"), 1);
+  await pointerClick("session-menu", "s1");
+  assert.equal(await evaluate("fixture.state.menu?.kind"), "session");
+  assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false, "打开插件菜单不触发原生菜单");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.dtw-menu button')].map(b=>b.textContent.trim())"),
+    ["打开会话", "重命名", "置顶", "分享", "多选", "移到项目", "从项目中移除", "删除会话"]);
+  await checkMenuPosition(".dtw-menu", "session-menu", "s1");
+  await evaluate("fixture.state.snapshot.sessions.find(s=>s.sessionId==='s1').title='菜单打开时更新';fixture.renderTree()");
+  assert.equal(await evaluate("fixture.state.menu.anchor===document.querySelector('[data-action=session-menu][data-id=s1]')"),true);
+  await checkMenuPosition(".dtw-menu", "session-menu", "s1");
   await fs.mkdir(path.join(root, ".live-fs"), { recursive: true });
   let screenshot = await page.call("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 520, height: 760, scale: 1 } });
   await fs.writeFile(path.join(root, ".live-fs", "sidebar-dark.png"), Buffer.from(screenshot.data, "base64"));
-  await evaluate("document.querySelector('.ds-dropdown-menu-option').click()");
-  await waitFor("原生操作关闭菜单", () => evaluate("fixture.state.nativeMenu===null"));
-  assert.deepEqual(await evaluate("fixtureNative"), ["重命名"], "原生操作继续调用原生事件");
-  assert.equal(await evaluate("document.querySelector('#native-history').classList.contains('dtw-native-menu-source')"), false);
-  assert.equal(await evaluate("document.querySelector('#native-history').style.display"), "none");
-  await evaluate(`globalThis.fixtureAlternateMenu=null;
-    const trigger=document.querySelector('.native-row[href$="s2"] button');
-    trigger.addEventListener('click',event=>{
-      event.preventDefault();event.stopImmediatePropagation();
-      if(fixtureAlternateMenu){fixtureAlternateMenu.remove();fixtureAlternateMenu=null;return;}
-      const menu=document.createElement('div');menu.className='native-session-dropdown';menu.setAttribute('role','menu');
-      menu.style.cssText='display:none;position:fixed;left:0;top:0;width:210px;background:#252525';
-      menu.innerHTML='<button role="menuitem">重命名</button><button role="menuitem">置顶</button><button role="menuitem">分享</button><button role="menuitem">删除</button>';
-      document.body.append(menu);fixtureAlternateMenu=menu;
-      setTimeout(()=>{if(menu.isConnected)menu.style.display='block';},25);
-    },true);`);
-  await pointerClick("session-menu","s2");
-  await evaluate("fixture.state.snapshot.sessions.find(session=>session.sessionId==='s2').title='首次点击期间标题更新';fixture.renderTree()");
-  await waitFor("首次点击接管样式显示的原生菜单",()=>evaluate("Boolean(document.querySelector('.native-session-dropdown .dtw-menu-extras'))"))
-    .catch(async error=>{throw new Error(error.message+': '+JSON.stringify(await evaluate("({nativeId:fixture.state.nativeMenu?.id,menuId:fixture.state.menu?.id,alternate:fixtureAlternateMenu?.outerHTML,native:document.querySelector('.ds-dropdown-menu')?.outerHTML,toasts:document.querySelector('.dtw-toast')?.textContent})")));});
-  await checkMenuPosition(".native-session-dropdown","session-menu","s2");
-  await pointerClick("session-menu","s2");
-  assert.equal(await evaluate("fixtureAlternateMenu===null&&fixture.state.nativeMenu===null"),true,'第二次点击应关闭而不是打开另一个菜单');
-  await evaluate(`document.addEventListener('pointerdown',event=>{
-    if(fixtureOpenTrigger&&!document.querySelector('.ds-dropdown-menu')?.contains(event.target)&&event.target!==fixtureOpenTrigger){
-      fixtureOpenTrigger=null;clearTimeout(fixtureMenuTimer);document.querySelector('.ds-floating-container')?.remove();
-    }
-  },true);`);
   await pointerClick("session-menu","s1");
-  await waitFor("鼠标首次点击打开项目会话菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
-  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
-  await evaluate("fixture.state.snapshot.sessions.find(session=>session.sessionId==='s1').title='菜单打开期间标题更新';fixture.renderTree()");
-  assert.equal(await evaluate("fixture.state.nativeMenu.anchor===document.querySelector('[data-action=session-menu][data-id=s1]')"),true,'刷新重建会话行后保留菜单并更新锚点');
-  await checkMenuPosition(".ds-dropdown-menu","session-menu","s1");
-  await pointerClick("session-menu","s1");
-  await delay(100);
-  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixture.state.nativeMenu===null"),true,'原生按下事件关闭后不能被插件重新打开到左上角');
+  assert.equal(await evaluate("fixture.state.menu===null"),true,"再次点击关闭");
   await pointerClick("session-menu","s7");
-  await waitFor("鼠标首次点击打开未归类菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
-  await checkMenuPosition(".ds-dropdown-menu","session-menu","s7");
-  await pointerClick("session-menu","s7");
-  await delay(100);
-  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixture.state.nativeMenu===null"),true);
+  await checkMenuPosition(".dtw-menu","session-menu","s7");
+  await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+  assert.equal(await evaluate("document.activeElement.dataset.id"),"s7");
+  for (const [action,label] of [["rename","重命名"],["pin","置顶"],["pin","取消置顶"],["share","分享"],["delete","删除"]]) {
+    await pointerClick("session-menu","s1");
+    await click(`session-${action}`,"s1");
+    await waitFor("执行原有操作",()=>evaluate(`fixtureNative.at(-1)===${JSON.stringify(label)}&&!fixture.state.nativeActionRunning`));
+    assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"),false);
+    assert.equal(await evaluate("document.querySelector('#native-history').style.display"),"none");
+  }
+  assert.deepEqual(await evaluate("fixtureNative"),["重命名","置顶","取消置顶","分享","删除"]);
+  assert.equal(await evaluate("fixture.state.snapshot.sessions.find(s=>s.sessionId==='s1').pinned"),false);
+  assert.equal(await evaluate("document.querySelector('.native-row[href$=s1]').firstChild.nodeValue"),"插件改名测试","插件改名输入应保存到原生行");
+  await evaluate(`globalThis.fixtureFlashes=0;
+    new MutationObserver(()=>{if([...document.querySelectorAll('.ds-dropdown-menu')].some(n=>getComputedStyle(n).visibility!=='hidden'))fixtureFlashes++;})
+      .observe(document.body,{childList:true,subtree:true});`);
+  await pointerClick("session-menu","s1");await click("session-rename","s1");
+  await waitFor("原生交互不展示弹层",()=>evaluate("!fixture.state.nativeActionRunning"));
+  assert.equal(await evaluate("fixtureFlashes"),0);
   await pointerClick("session-menu","s1");
-  await waitFor("原生提前关闭前的菜单",()=>evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
-  await evaluate("document.querySelector('.ds-floating-container').remove();fixtureOpenTrigger=null;fixture.closeNativeMenu(true)");
-  await delay(100);
-  assert.equal(await evaluate("!document.querySelector('.ds-dropdown-menu')&&fixtureOpenTrigger===null"),true,'清理已关闭菜单不得再次触发原生按钮');
-  await click("session-menu", "s1");
-  await waitFor("再次打开供关闭验证", () => evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
-  await click("session-menu", "s1");
-  assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false, "再次点击关闭原生菜单");
-  await click("session-menu", "s1");
-  await waitFor("原生菜单键盘关闭", () => evaluate("Boolean(document.querySelector('.dtw-menu-extras'))"));
-  await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
-  assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false, "Escape通过原生开关关闭菜单");
-  await click("session-menu", "s1");
-  await waitFor("再次打开原生菜单", () => evaluate("Boolean(document.querySelector('[data-action=\"open-picker\"]'))"));
   await click("open-picker", "s1");
   assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false);
   await click("move-to", "p2");
@@ -278,6 +248,17 @@ try {
   await checkMenuPosition(".dtw-menu","session-menu","helper");
   await evaluate("document.body.click()");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"), false);
+  await click("session-menu","s7");await click("session-select","s7");
+  assert.equal(await evaluate("document.querySelector('[data-action=select-session][data-id=s7]').getAttribute('aria-checked')"),"true");
+  await click("select-session","s8");
+  assert.equal(await evaluate("fixture.state.selectedSessions.size"),2);
+  await click("cancel-selection");
+  assert.equal(await evaluate("fixture.state.selectedSessions===null"),true);
+  await click("session-menu","s8");await click("session-select","s8");
+  await evaluate("globalThis.confirm=()=>false");
+  await click("delete-selected");assert.equal(await evaluate("fixture.state.selectedSessions.size"),1);
+  await evaluate("globalThis.confirm=()=>true");await click("delete-selected");
+  await waitFor("批量删除成功后更新插件列表",()=>evaluate("fixture.state.selectedSessions===null&&!document.querySelector('[data-session=s8]')"));
   await click("project-new-chat", "p2");
   assert.equal(await evaluate("fixtureNewChats"), 1);
   assert.equal(await evaluate("fixture.state.pendingNewProjectId"), "p2");
@@ -296,17 +277,15 @@ try {
   assert.ok(bounds.left >= 8 && bounds.right <= 372 && bounds.top >= 8 && bounds.bottom <= 372, JSON.stringify(bounds));
   await evaluate("document.body.click();document.querySelector('[data-session=s7]').scrollIntoView({block:'center',behavior:'instant'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await click("session-menu", "s7");
-  await waitFor("窄屏原生会话菜单",()=>evaluate("Boolean(document.querySelector('.dtw-native-menu'))"));
-  await checkMenuPosition(".ds-dropdown-menu","session-menu","s7");
+  await checkMenuPosition(".dtw-menu","session-menu","s7");
   await evaluate("document.querySelector('.ds-scroll-area').dispatchEvent(new Event('scroll'))");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"), false, "滚动后关闭浮层");
-  assert.equal(await evaluate("fixture.state.nativeMenu===null"), true, "滚动后关闭原生会话菜单");
   await click("project-menu","p2");await click("archive-project","p2");
   await waitFor("归档后隐藏项目",()=>evaluate("!document.querySelector('[data-group=p2]')"));
   assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
   await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
-  console.log(JSON.stringify({ ok: true, checks: "single pointer click for project/unassigned menus, delayed style mount, refreshed anchors, no orphan dropdown, native callbacks, hints, archives and viewport" }));
+  console.log(JSON.stringify({ ok: true, checks: "plugin menus open on one click, refreshed anchors, original callbacks without visible dropdowns, pin state, hints, archives and viewport" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();
