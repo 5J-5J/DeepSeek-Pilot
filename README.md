@@ -10,9 +10,9 @@
 
 ![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Platform](https://img.shields.io/badge/platform-Chrome_MV3-4285F4) ![Status](https://img.shields.io/badge/status-early_development-orange)
 
-![项目、记忆与新会话的概念示意，并非产品截图](docs/assets/pilot-overview.svg)
+![项目、记忆与新会话的概念示意，并非产品截图](assets/pilot-overview.svg)
 
-[快速开始](#快速开始) · [场景展示](docs/EXAMPLES.md) · [路线图](docs/ROADMAP.md)
+[安装方式](#安装方式) · [场景展示](#场景展示) · [未来开发目标](#未来开发目标)
 
 </div>
 
@@ -32,7 +32,7 @@ DeepSeek Pilot 是一个第三方浏览器扩展，直接增强你熟悉的 Deep
 
 ## 场景展示
 
-以下为虚构示例，不是真实账号记录或模型输出承诺。操作步骤见[样例手册](docs/EXAMPLES.md)。
+以下为虚构示例，不是真实账号记录或模型输出承诺。
 
 ### 01 · 一个项目，多次推进
 
@@ -63,9 +63,24 @@ DeepSeek Pilot 是一个第三方浏览器扩展，直接增强你熟悉的 Deep
 
 接续由任务队列处理，新会话首条消息重新带入适用记忆。接续不是无限上下文，也不承诺逐字保留全部历史；继承内容预览和新旧会话跳转仍在路线图中。
 
-## 快速开始
+## 安装方式
 
-1. 下载本仓库源码 ZIP 并解压，或克隆当前仓库。
+### 方式一：下载 ZIP（推荐）
+
+在[仓库主页](https://github.com/5J-5J/DeepSeek-Flow)点击 **Code → Download ZIP**，下载后解压到一个固定目录。目前通过源码加载安装，不需要编译。
+
+### 方式二：Git 克隆
+
+```sh
+git clone https://github.com/5J-5J/DeepSeek-Flow.git deepseek-pilot
+cd deepseek-pilot
+```
+
+项目展示名称为 DeepSeek Pilot，当前仓库地址仍为 DeepSeek-Flow。
+
+### 在 Chrome 中加载
+
+1. 确认解压或克隆后的目录中存在 `core/manifest.json`。
 2. 在 Chrome 中打开 `chrome://extensions/`，开启**开发者模式**。
 3. 点击**加载已解压的扩展程序**，选择仓库中的 **`core/`** 文件夹。
 4. 打开或刷新 [DeepSeek 网页版](https://chat.deepseek.com/)，使用自己的账号登录。
@@ -73,6 +88,12 @@ DeepSeek Pilot 是一个第三方浏览器扩展，直接增强你熟悉的 Deep
 6. 在项目内开启新会话，发送首条消息前确认项目记忆开关。
 
 运行扩展无需构建或配置单独的模型 API key。记忆整理等自动化通过 DeepSeek 网页辅助会话执行，需要可用账号与网络，并会产生站点请求。目前扩展界面为中文。
+
+### 更新已安装的扩展
+
+Git 安装在仓库目录执行 `git pull --ff-only`；ZIP 安装将新源码解压到原安装位置。然后在 `chrome://extensions/` 找到 **DeepSeek Pilot**，点击重新加载，再刷新 DeepSeek 页面。不要删除已加载的目录；更新前可先导出重要记忆，不必卸载扩展。
+
+如果提示找不到 manifest，请确认选择的是包含 `manifest.json` 的 `core/`，而不是 ZIP 文件或仓库根目录。
 
 ## 记忆如何工作
 
@@ -92,20 +113,28 @@ flowchart LR
 - **显示开关只影响页面展示，不代表停止发送或停止学习。** 按会话控制是否带入、是否学习仍待开发。
 - 模型整理可能遗漏或误解，请检查重要记忆。人工固定条目受到保护。
 
-## 当前进度
+## 关于本项目
 
-截至 **2026-10-13**，以当前代码和[阶段计划](docs/开发优化阶段计划.md)为准：
+DeepSeek Pilot 希望把一次次独立问答连接成可以持续推进的个人工作空间：项目有目标，会话有背景，重要决定可以积累，换一个对话也能继续工作。
 
-| 状态 | 范围 |
-| --- | --- |
-| 已实现 | 项目树、手动归属、置顶、归档和原生会话操作衔接 |
-| 已实现 | 个人与项目记忆整理、编辑、导入导出、个人记忆压缩及本地快照 |
-| 已实现 | 上下文预算与长会话接续、串行队列及失败处理 |
-| 已完成的优化 | 辅助会话清理边界保护，保留手动收纳和来源不明的会话 |
-| 暂时关闭 | 自动会话归类；请手动移动会话 |
-| 待开发 | 实际记忆状态与预览、按会话控制、更新反馈、接续体验和搜索管理 |
+当前版本已具备项目管理、个人与项目记忆、长会话接续等基础能力。自动会话归类暂时关闭，请手动移动会话。
 
-后续按[路线图](docs/ROADMAP.md)推进，不承诺尚未验证的发布日期。
+## 未来开发目标
+
+下面是产品层面的发展方向，均为尚未交付的目标或探索项，会根据实际使用反馈调整优先级，不承诺固定上线日期。
+
+| 方向 | 希望加入的功能 | 带来的价值 |
+| --- | --- | --- |
+| 项目知识库 | 为项目附加参考资料、笔记与常用背景，按当前问题选择相关内容 | 不用每次重新粘贴项目资料 |
+| 可追溯的记忆 | 查看记忆来源、变更记录和冲突，支持确认与回退 | 知道记忆为何变化，及时纠正误解 |
+| 可控的会话记忆 | 临时对话模式，分别控制是否带入和是否学习记忆 | 临时问题不影响长期背景 |
+| 更自然的跨会话接续 | 接续前预览摘要与继承内容，关联前后会话 | 换对话时清楚带走了什么 |
+| 项目总览 | 汇总目标、关键决定、当前进展和下一步，支持人工确认 | 回到项目时快速找回工作状态 |
+| 搜索与整理 | 跨会话搜索、记忆搜索、批量移动与可控的自动归类 | 项目多起来后仍能快速找到信息 |
+| 可复用的工作方式 | 项目模板、常用提示词与背景组合 | 为写作、学习、研发等重复工作快速起步 |
+| 更易安装与使用 | 版本化安装包、安装引导、英文界面，探索浏览器商店发布 | 降低初次使用和后续更新的门槛 |
+
+项目知识库、项目总览和模板等属于后续探索方向，不代表当前版本已经支持文件检索、任务执行或多平台接入。
 
 ## 数据与边界
 
@@ -128,7 +157,7 @@ node tests/request-body-test.mjs
 node tests/memory-display-test.mjs
 ```
 
-更多验证命令与详细行为见[开发参考](docs/behavior-reference.zh-CN.md)。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+贡献流程与验证说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```text
 core/background/   记忆整理与任务队列
@@ -137,11 +166,11 @@ core/logic/        存储、历史与消息处理
 core/manage/       记忆管理
 core/options/      设置
 tests/             离线与本地浏览器检查
-docs/              样例、路线图与设计说明
+assets/            README 展示素材
 ```
 
 ## 开源准备与致谢
 
 当前仓库尚未设置开源许可证，发布前需由维护者确认；在此之前不宣称采用 MIT 或其他开源授权。
 
-文档组织参考 [Mem0](https://github.com/mem0ai/mem0) 的记忆价值表达与 [Nanobrowser](https://github.com/nanobrowser/nanobrowser) 的演示和安装结构。记忆提示词的设计参考见[行为与开发参考](docs/behavior-reference.zh-CN.md)。
+文档组织参考 [Mem0](https://github.com/mem0ai/mem0) 的记忆价值表达与 [Nanobrowser](https://github.com/nanobrowser/nanobrowser) 的演示和安装结构。

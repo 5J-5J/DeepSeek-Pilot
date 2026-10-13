@@ -10,9 +10,9 @@ Projects, personal and project memory, and conversation continuity for DeepSeek 
 
 ![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Platform](https://img.shields.io/badge/platform-Chrome_MV3-4285F4) ![Status](https://img.shields.io/badge/status-early_development-orange)
 
-![Concept diagram connecting projects, memory and the next chat; not a product screenshot](docs/assets/pilot-overview.svg)
+![Concept diagram connecting projects, memory and the next chat; not a product screenshot](assets/pilot-overview.svg)
 
-[Get started](#get-started) · [Examples](docs/EXAMPLES.md) · [Roadmap](docs/ROADMAP.md)
+[Installation](#installation) · [Examples](#examples) · [Future goals](#future-goals)
 
 </div>
 
@@ -32,7 +32,7 @@ DeepSeek Pilot is a third-party browser extension that enhances the DeepSeek web
 
 ## Examples
 
-These fictional scenarios illustrate workflows, not real account records or guaranteed model outputs. See the bilingual [example guide](docs/EXAMPLES.md) for steps.
+These fictional scenarios illustrate workflows, not real account records or guaranteed model outputs.
 
 ### 01 · One project, several conversations
 
@@ -63,9 +63,24 @@ Current chat → Configured budget reached → Continuation task → New chat
 
 The task queue handles continuation. The first message in the new chat includes applicable memories again. This is not unlimited context or a promise to preserve history verbatim. Inheritance previews and links between old and new chats remain planned work.
 
-## Get started
+## Installation
 
-1. Download and extract this repository's source ZIP, or clone the current repository.
+### Option 1: Download ZIP (recommended)
+
+Open the [repository](https://github.com/5J-5J/DeepSeek-Flow), choose **Code → Download ZIP**, and extract it to a permanent folder. Installation currently uses unpacked source; no build is needed.
+
+### Option 2: Clone with Git
+
+```sh
+git clone https://github.com/5J-5J/DeepSeek-Flow.git deepseek-pilot
+cd deepseek-pilot
+```
+
+The project is named DeepSeek Pilot; its repository URL still uses DeepSeek-Flow.
+
+### Load in Chrome
+
+1. Confirm that the extracted or cloned folder contains `core/manifest.json`.
 2. Open `chrome://extensions/` in Chrome and enable **Developer mode**.
 3. Choose **Load unpacked** and select the repository's **`core/`** folder.
 4. Open or refresh [DeepSeek](https://chat.deepseek.com/) and sign in with your own account.
@@ -73,6 +88,12 @@ The task queue handles continuation. The first message in the new chat includes 
 6. Start a new chat inside the project and check the project-memory switch before sending its first message.
 
 No build step or separate model API key is required. Memory processing and other automation use auxiliary DeepSeek web conversations, require a working account and network, and generate site requests. The extension UI is currently in Chinese.
+
+### Update an existing installation
+
+For a Git installation, run `git pull --ff-only` in the repository. For ZIP installations, extract the updated source into the original location. Then reload **DeepSeek Pilot** in `chrome://extensions/` and refresh the DeepSeek page. Keep the loaded folder in place. Export important memories before updating; uninstalling the extension is not necessary.
+
+If Chrome cannot find the manifest, select the `core/` folder containing `manifest.json`, not the ZIP file or repository root.
 
 ## How memory works
 
@@ -92,20 +113,28 @@ flowchart LR
 - **Display switches affect visibility, not whether data is sent or learned.** Per-chat injection and learning controls are planned.
 - Model-generated memories can omit or misinterpret information. Review important entries; manually pinned entries receive protection.
 
-## Status
+## About this project
 
-As of **2026-10-13**, based on current code and the [development plan (Chinese)](docs/开发优化阶段计划.md):
+DeepSeek Pilot aims to connect isolated questions into a personal workspace where work can continue: projects have goals, conversations have context, important decisions accumulate, and a new chat can pick up where you left off.
 
-| Status | Scope |
-| --- | --- |
-| Implemented | Project tree, manual assignment, pinning, archiving and integration with native chat actions |
-| Implemented | Personal/project memory processing, editing, import/export, personal memory compression and local snapshots |
-| Implemented | Context budgets, continuation, serial task queue and failure handling |
-| Completed improvement | Cleanup protections for manually collected chats and chats of unknown origin |
-| Temporarily disabled | Automatic conversation classification; move chats manually |
-| Planned | Actual memory-state previews, per-chat controls, update feedback, continuation UX and search/management |
+The current version provides the foundations: project organization, personal and project memory, and conversation continuation. Automatic classification is temporarily disabled; assign chats manually.
 
-See the [roadmap](docs/ROADMAP.md) for the intended sequence. No release dates are promised.
+## Future goals
+
+These are product directions, not shipped features. Goals and exploratory ideas will be prioritized based on feedback, without fixed release dates.
+
+| Direction | Features we want to add | Value |
+| --- | --- | --- |
+| Project knowledge | Attach reference material, notes and reusable context; select relevant content for a question | Avoid repeatedly pasting project background |
+| Traceable memory | Sources, change history, conflict review, confirmation and rollback | Understand changes and correct misunderstandings |
+| Per-chat memory controls | Temporary chats and separate controls for injection and learning | Keep one-off questions out of lasting context |
+| Smoother continuation | Preview summaries and inherited context; link old and new chats | Know what carries over into the next conversation |
+| Project overview | Summarize goals, decisions, progress and next steps for manual confirmation | Resume a project with less effort |
+| Search and organization | Cross-chat search, memory search, bulk moves and controllable automatic classification | Find information as the workspace grows |
+| Reusable workflows | Project templates, saved prompts and context presets | Start recurring writing, learning and development work faster |
+| Easier adoption | Versioned install archives, onboarding, English UI and exploration of browser-store distribution | Simplify installation and updates |
+
+Project knowledge, overviews and templates are exploratory directions. They do not imply current support for file retrieval, task execution or multiple AI platforms.
 
 ## Data and boundaries
 
@@ -128,7 +157,7 @@ node tests/request-body-test.mjs
 node tests/memory-display-test.mjs
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution steps and test boundaries, and the [behavior reference (Chinese)](docs/behavior-reference.zh-CN.md) for more commands and detailed rules.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution steps and test boundaries.
 
 ```text
 core/background/   Memory processing and task queue
@@ -137,11 +166,11 @@ core/logic/        Storage, history and message handling
 core/manage/       Memory manager
 core/options/      Settings
 tests/             Offline and local-browser checks
-docs/              Examples, roadmap and design notes
+assets/            README artwork
 ```
 
 ## Open-source preparation and credits
 
 No open-source license has been selected yet. The maintainer must decide before release; this project does not currently claim MIT or another open-source license.
 
-Documentation presentation draws inspiration from [Mem0](https://github.com/mem0ai/mem0) and [Nanobrowser](https://github.com/nanobrowser/nanobrowser). Memory-prompt design references are recorded in the [behavior reference](docs/behavior-reference.zh-CN.md).
+Documentation presentation draws inspiration from [Mem0](https://github.com/mem0ai/mem0) and [Nanobrowser](https://github.com/nanobrowser/nanobrowser).
