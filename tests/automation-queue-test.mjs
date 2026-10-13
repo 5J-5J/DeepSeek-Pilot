@@ -6,7 +6,7 @@ import vm from "node:vm";
 import { workbenchSource } from "./workbench-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const source = await workbenchSource();
+const source = await workbenchSource({ autoClassify: true });
 const jobs = new Map();
 const settingsRows = new Map();
 const jobKey = (accountId, jobId) => JSON.stringify([accountId, jobId]);

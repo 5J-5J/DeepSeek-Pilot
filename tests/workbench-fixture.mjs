@@ -11,9 +11,11 @@ export async function runWorkbench(context) {
   };
   vm.runInContext(primary, context, { filename: "workbench.js" });
 }
-export async function workbenchSource() {
-  return (await Promise.all(["workbench.js", "session-memory.js"].map((name) =>
+export async function workbenchSource({ autoClassify = false } = {}) {
+  const source = (await Promise.all(["workbench.js", "session-memory.js"].map((name) =>
     readFile(new URL(`../core/background/${name}`, import.meta.url), "utf8")))).join("\n");
+  // Offline fixtures may enable the retained classifier to keep testing its implementation.
+  return autoClassify ? source.replace("const AUTO_CLASSIFY_ENABLED = false;", "const AUTO_CLASSIFY_ENABLED = true;") : source;
 }
 export function memoryCommitFixture(db) {
   return async (accountId, _sessions, decide) => {

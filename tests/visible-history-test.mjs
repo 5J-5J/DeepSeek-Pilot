@@ -38,7 +38,7 @@ const chrome = {
     set: async (values) => { Object.assign(storageValues, values); },
   } },
 };
-const source = await workbenchSource();
+const source = await workbenchSource({ autoClassify: true });
 vm.runInNewContext(source, { DTWDB: db, chrome, importScripts() {}, crypto: globalThis.crypto, structuredClone,
   Date, Number, String, Boolean, Array, Object, Set, Map, Promise, JSON, Math, TextEncoder, console, setTimeout }, { filename: "workbench.js" });
 const accountId = "account123";

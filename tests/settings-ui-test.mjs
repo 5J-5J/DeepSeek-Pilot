@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMemoryHistoryChecks } from "./memory-history-checks.mjs";
+import { workbenchSource } from "./workbench-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "dtw-settings-test-"));
@@ -51,7 +52,7 @@ try {
   await page.call("Runtime.enable");
   await page.call("Page.enable");
   const dbSource = await fs.readFile(path.join(root, 'core/logic/db.js'), 'utf8');
-  const backgroundSource = (await Promise.all(['workbench.js', 'session-memory.js'].map(name => fs.readFile(path.join(root, 'core/background', name), 'utf8')))).join('\n');
+  const backgroundSource = await workbenchSource({ autoClassify: true });
   const baseUrl = new URL('../core/', import.meta.url).href;
   const preload = `globalThis.importScripts=()=>{};
     const fixtureStorage={accountId:'ui-test-account','dtw.firstRunAtMs':Math.floor(Date.now()/60000)*60000+600}; let fixtureListener;

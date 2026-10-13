@@ -18,6 +18,7 @@ const PERSONAL_MEMORY_CHARACTER_LIMIT = 5000;
 const MEMORY_KINDS = { PERSONAL: ["资料", "偏好", "工作方式", "术语", "其他"],
   PROJECT: ["目标", "约束", "决定", "进展", "阻塞", "下一步", "其他"] };
 const QUEUED_JOB_TYPES = new Set(["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"]);
+const AUTO_CLASSIFY_ENABLED = false;
 const MAX_PARALLEL_PLUGIN_SESSIONS = 1;
 const migratedAutomationAccounts = new Set();
 const historyRequestSchedules = new Map();
@@ -622,6 +623,7 @@ async function enforcePersonalMemoryBudget(accountId) {
 }
 
 async function dispatchQueuedJob(job) {
+  if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") return;
   try {
     for (let attempt = 0; attempt < 30; attempt++) {
       const current = await DB.get("jobs", key(job.accountId, job.jobId));
@@ -661,6 +663,13 @@ async function drainJobQueueNow() {
     await ensureSessionMemory(accountId);
   const jobs = (await DB.all("jobs")).filter((job) => QUEUED_JOB_TYPES.has(job.type));
   for (const job of jobs) {
+    if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY" && ["QUEUED", "PENDING", "RUNNING"].includes(job.status)) {
+      job.status = "CANCELLED";
+      job.result = { ...job.result, ignored: "classification-disabled", reason: "会话自动归类已关闭" };
+      job.updatedAtMs = NOW(); await DB.put("jobs", job);
+      if (Number.isInteger(job.tabId)) await chrome.tabs.remove(job.tabId).catch(() => {});
+      continue;
+    }
     if (job.type === "COMPACT" && ["QUEUED", "FAILED", "NEEDS_REVIEW"].includes(job.status)
       && (!memorySnapshotMatches(job, await DB.all("memories", job.accountId))
         || job.memoryEpoch !== await memoryEpoch(job.accountId, "PERSONAL", null))) {
@@ -784,6 +793,7 @@ function parseJSON(raw) {
 }
 
 async function classify(accountId, sessionId, inputVersion, retry = false) {
+  if (!AUTO_CLASSIFY_ENABLED) return;
   const existing = (await DB.all("jobs", accountId)).some((entry) => entry.type === "CLASSIFY" && entry.sourceSessionId === sessionId);
   if (existing && !retry) return;
   const projects = (await DB.all("projects", accountId)).filter((entry) => !entry.archived && !entry.systemKind).slice(0, 50);
@@ -802,6 +812,7 @@ async function classify(accountId, sessionId, inputVersion, retry = false) {
 }
 
 async function retryClassification(accountId, message) {
+  if (!AUTO_CLASSIFY_ENABLED) throw new Error("会话自动归类已关闭，请手动移动会话");
   const job = await DB.get("jobs", key(accountId, clean(message.jobId, 100)));
   if (!job || job.type !== "CLASSIFY" || !["NEEDS_REVIEW", "FAILED"].includes(job.status)
     || job.result?.choice === "NEW") throw new Error("这条归类作业不能重试");
@@ -927,6 +938,10 @@ async function automationResult(accountId, message, sender) {
   const job = await DB.get("jobs", key(accountId, message.jobId));
   if (!job || !["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type) || job.status !== "RUNNING"
     || job.tabId !== sender.tab?.id) throw new Error("作业来源或状态无效");
+  if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") {
+    await drainJobQueue();
+    return { ok: true, ignored: true };
+  }
   if (message.automationSessionId) await recordAutomationSession(accountId, job, message.automationSessionId);
   try {
     if (message.error) throw new Error(clean(message.error, 300));
@@ -1411,6 +1426,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "dtw-job-check") return;
   for (const job of await DB.all("jobs")) {
+    if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") continue;
     const timeoutMs = ["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type) ? 10 * 60000 : 5 * 60000;
     if (!["PENDING", "RUNNING"].includes(job.status) || NOW() - job.updatedAtMs < timeoutMs) continue;
     job.status = "NEEDS_REVIEW";

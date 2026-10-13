@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { workbenchSource, memoryCommitFixture } from "./workbench-fixture.mjs";
 
-const source = await workbenchSource();
+const source = await workbenchSource({ autoClassify: true });
 const tables = new Map(["sessions", "messages", "projects", "memberships", "memories", "memoryTurns", "jobs", "settings", "metrics"].map((name) => [name, new Map()]));
 const idFields = { sessions: "sessionId", projects: "projectId", memberships: "sessionId", memories: "memoryId", memoryTurns: "turnKey", jobs: "jobId", settings: "key", metrics: "metricId" };
 const db = {
