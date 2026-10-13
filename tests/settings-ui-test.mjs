@@ -299,10 +299,10 @@ ${backgroundSource}
     .replace("  injectPageHook();", "")
     .replace('  const currentId = () => idFromHref(location.href);', '  const currentId = () => "message-edit-session";')
     .replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));',
-      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMemoryEditors, findEditor, observeMessageDisplay };");
+      "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMemoryEditors, findEditor, observeMessageDisplay, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount };");
   const messageDisplay = await evaluate(page, `(()=>{
     const addListener=chrome.runtime.onMessage.addListener;
-    chrome.runtime.onMessage.addListener=()=>{};
+    chrome.runtime.onMessage.addListener=fn=>globalThis.contentMessageListener=fn;
     try {(0,eval)(${JSON.stringify(historySource)});(0,eval)(${JSON.stringify(displaySource)});(0,eval)(${JSON.stringify(contentSource)});}
     finally {chrome.runtime.onMessage.addListener=addListener;}
     const host=document.createElement('section');document.body.append(host);
@@ -464,7 +464,99 @@ ${backgroundSource}
     assert.equal(row.composer,'新的草稿');assert.equal(row.pending,false);assert.equal(row.contexts,0,
       '取消编辑后在下一次绘制前清除隐藏记忆的临时提交上下文');
   }
-  console.log(JSON.stringify({ ok: true, checks: "hints, settings, category editing, queues, budgets, snapshots, native display, memory editing and cancel visibility before paint", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
+  const restrictionChecks = await evaluate(page, `(async()=>{
+    const fixture=messageDisplayFixture;const {state}=fixture;
+    const sendMessage=chrome.runtime.sendMessage;const storage=chrome.storage.local;
+    const host=document.createElement('section');document.body.append(host);
+    const requests=[];const requestStates=[];let nativeSends=0;let savedIssue=null;
+    const onState=event=>requestStates.push(JSON.parse(event.detail));
+    window.addEventListener('dtw:request-state',onState);
+    chrome.runtime.sendMessage=async message=>{
+      requests.push(message);
+      if(message.type==='dtw:request-issue')savedIssue=message;
+      if(message.type==='dtw:snapshot')return {ok:true,settings:{automationPaused:true},alerts:{issue:savedIssue},
+        sessions:[],memberships:[],memories:[],projects:[],jobs:[]};
+      return {ok:true};
+    };
+    chrome.storage.local={get:async()=>({}),set:async values=>requests.push({type:'storage:set',...values})};
+    const clear=()=>{state.accountId='ui-test-account';state.networkIssue=null;savedIssue=null;requests.length=0;host.replaceChildren();};
+    const notice=()=>{const element=document.createElement('div');element.textContent='您的账号已被禁言至 2099-01-01 00:00';host.append(element);return element;};
+    const results={};
+    try {
+      clear();
+      for(const [tag,attribute,value] of [['div','data-message-author-role','assistant'],['div','class','ds-message'],
+        ['div','class','dtw-owned'],['a','href','/chat/s/muted-title'],['aside','class','sidebar']]) {
+        const element=document.createElement(tag);element.setAttribute(attribute,value);
+        element.textContent='您的账号已被禁言';host.append(element);
+      }
+      const hidden=notice();hidden.hidden=true;
+      results.excluded=fixture.currentRequestIssue()===null;
+      hidden.hidden=false;hidden.style.visibility='hidden';
+      results.invisible=fixture.currentRequestIssue()===null;
+      clear();const composer=document.createElement('div');host.append(composer);
+      const editor=document.createElement('textarea');editor.id='chat-input';editor.value='普通草稿中提到禁言';composer.append(editor);
+      const button=document.createElement('button');button.className='ds-button--primary ds-button--circle';
+      button.onclick=()=>nativeSends++;composer.append(button);
+      results.normal=fixture.currentRequestIssue()===null;
+      await fixture.submit(editor);results.normalSends=nativeSends;
+      editor.replaceWith(notice());
+      results.detected=fixture.currentRequestIssue()?.code;
+      results.pageBlocked=requestStates.at(-1)?.issue?.code;
+      results.waitCode=await fixture.waitEditor().then(()=>null,error=>error.code);
+      results.submitCode=await fixture.submit(editor).then(()=>null,error=>error.code);
+      await fixture.memorySend(editor);
+      results.taskReplies=['dtw:automation','dtw:rollover'].map(type=>{
+        let reply;contentMessageListener({type,jobId:type,prompt:'不应发送'}, {},value=>reply=value);return reply;
+      });
+      await new Promise(resolve=>setTimeout(resolve,50));
+      results.persisted=savedIssue?.code;
+      const reports=requests.filter(message=>message.type==='dtw:request-issue').length;
+      fixture.currentRequestIssue();await new Promise(resolve=>setTimeout(resolve,20));
+      results.noDuplicate=reports===requests.filter(message=>message.type==='dtw:request-issue').length;
+      results.noPrepare=!requests.some(message=>message.type==='dtw:prepare-send');
+      results.blockedSends=nativeSends;
+      host.replaceChildren();results.keepsPause=fixture.currentRequestIssue()?.code;
+      clear();const waiting=fixture.waitEditor();
+      setTimeout(notice,20);
+      results.waitingCode=await waiting.then(()=>null,error=>error.code);
+      await new Promise(resolve=>setTimeout(resolve,50));
+      clear();const delayedComposer=document.createElement('div');host.append(delayedComposer);
+      const delayedEditor=document.createElement('textarea');delayedEditor.id='chat-input';delayedComposer.append(delayedEditor);
+      const delayedButton=document.createElement('button');delayedButton.className='ds-button--primary ds-button--circle';
+      delayedButton.disabled=true;delayedButton.onclick=()=>nativeSends++;delayedComposer.append(delayedButton);
+      const sending=fixture.submit(delayedEditor);
+      setTimeout(()=>{delayedEditor.style.display='none';notice();},20);
+      results.sendingCode=await sending.then(()=>null,error=>error.code);
+      results.delayedSends=nativeSends;
+      await new Promise(resolve=>setTimeout(resolve,50));
+      clear();state.accountId='';notice();fixture.currentRequestIssue();
+      results.beforeAccount=requests.length===0&&state.networkIssue?.code==='ACCOUNT_RESTRICTED';
+      await fixture.initializeAccount('ui-test-account',Date.now());
+      results.issueBeforeReady=requests.findIndex(message=>message.type==='dtw:request-issue')<requests.findIndex(message=>message.type==='dtw:request-ready');
+      results.issueBeforeStorage=requests.findIndex(message=>message.type==='dtw:request-issue')<requests.findIndex(message=>message.type==='storage:set');
+      clear();const disabled=document.createElement('textarea');disabled.id='chat-input';disabled.disabled=true;
+      disabled.placeholder='您的账号已被禁言';host.append(disabled);
+      results.disabled=fixture.currentRequestIssue()?.code;
+      await new Promise(resolve=>setTimeout(resolve,50));
+      clear();const english=notice();english.textContent='Your account has been suspended.';
+      results.english=fixture.currentRequestIssue()?.code;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    } finally {
+      host.remove();window.removeEventListener('dtw:request-state',onState);
+      chrome.runtime.sendMessage=sendMessage;chrome.storage.local=storage;
+    }
+    return results;
+  })()`);
+  for (const key of ['excluded','invisible','normal','noDuplicate','noPrepare','beforeAccount','issueBeforeReady','issueBeforeStorage'])
+    assert.equal(restrictionChecks[key],true,key);
+  for (const key of ['detected','pageBlocked','waitCode','submitCode','persisted','keepsPause','waitingCode','sendingCode','disabled','english'])
+    assert.equal(restrictionChecks[key],'ACCOUNT_RESTRICTED',key);
+  for (const reply of restrictionChecks.taskReplies) {
+    assert.equal(reply.ok,false);assert.equal(reply.code,'ACCOUNT_RESTRICTED');
+  }
+  assert.equal(restrictionChecks.normalSends,1);assert.equal(restrictionChecks.blockedSends,1,'禁言后不得触发原生发送');
+  assert.equal(restrictionChecks.delayedSends,1,'等待发送按钮期间出现禁言也必须停止');
+  console.log(JSON.stringify({ ok: true, checks: "settings, memory editing, mute detection and blocked sends in local DOM", screenshot: path.join(root, ".live-fs", "settings-ui.png") }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();

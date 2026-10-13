@@ -63,6 +63,7 @@
   }
   const historyRequests = new Map();
   async function history(sessionId, options) {
+    requireSendAllowed();
     let pending = historyRequests.get(sessionId);
     if (!pending) {
       pending = (async () => {
@@ -98,6 +99,7 @@
     }
   }
   async function arm(prompt, operation) {
+    requireSendAllowed();
     const requestId = `send_${crypto.randomUUID()}`;
     const marker = `[DTW:${requestId}]`;
     const ready = waitEvent("dtw:network-armed", requestId, 5000);
@@ -246,6 +248,49 @@
     }
     return null;
   }
+  function accountRestrictionText() {
+    if (!document.body) return "";
+    const restricted = /禁言|(?:account|you).*(?:banned|suspended|muted)|(?:banned|suspended|muted).*account/i;
+    const editor = findEditor();
+    const editorVisible = editor?.getClientRects().length && getComputedStyle(editor).visibility === "visible";
+    if (editorVisible && !editor.disabled && editor.getAttribute("aria-disabled") !== "true"
+      && editor.getAttribute("contenteditable") !== "false") return "";
+    const placeholder = editor?.getAttribute("placeholder") || "";
+    if (editorVisible && restricted.test(placeholder)) return placeholder.slice(0, 220);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const text = walker.currentNode.textContent.trim();
+      const parent = walker.currentNode.parentElement;
+      if (!restricted.test(text) || !parent || parent.closest('#dtw-root, .dtw-owned, .dtw-tree, [data-message-author-role], div._9663006, div.d29f3d7d, .ds-message, .ds-markdown, textarea, input, [contenteditable], nav, aside, a[href*="/chat/s/"]')) continue;
+      const range = document.createRange(); range.selectNodeContents(walker.currentNode);
+      if (range.getClientRects().length && getComputedStyle(parent).visibility === "visible")
+        return (parent.innerText || text).trim().slice(0, 220);
+    }
+    return "";
+  }
+  let restrictionReportedFor = "";
+  let restrictionReport = Promise.resolve();
+  function currentRequestIssue() {
+    const text = accountRestrictionText();
+    const message = text && `DeepSeek 账号已被禁言，插件请求已停止：${text}`;
+    if (message && (state.networkIssue?.code !== "ACCOUNT_RESTRICTED" || state.networkIssue.message !== message
+      || state.accountId && restrictionReportedFor !== state.accountId)) {
+      const issue = { code: "ACCOUNT_RESTRICTED", message, observedAtMs: Date.now() };
+      if (state.accountId) {
+        restrictionReportedFor = state.accountId;
+        restrictionReport = reportRequestIssue(issue);
+        restrictionReport.catch(() => { restrictionReportedFor = ""; });
+      } else { state.networkIssue = issue; restrictionReportedFor = ""; }
+      window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ issue,
+        paused: Boolean(state.snapshot?.settings.automationPaused) }) }));
+    }
+    const issue = state.networkIssue;
+    return issue && (issue.code !== "RATE_LIMITED" || issue.untilMs > Date.now()) ? issue : null;
+  }
+  function requireSendAllowed() {
+    const issue = currentRequestIssue();
+    if (issue) throw Object.assign(new Error(issue.message), { code: issue.code });
+  }
   function editorText(editor) { return editor?.value ?? editor?.innerText ?? editor?.textContent ?? ""; }
   function setEditor(editor, value, focus = true) {
     if (focus) editor.focus();
@@ -274,10 +319,12 @@
   async function submit(editor) {
     let button;
     for (let attempt = 0; attempt < 20; attempt += 1) {
+      requireSendAllowed();
       button = nativeSend(editor);
       if (sendEnabled(button)) break;
       await delay(100);
     }
+    requireSendAllowed();
     if (!sendEnabled(button)) throw new Error(button ? "DeepSeek 发送按钮未启用" : "找不到 DeepSeek 发送按钮");
     state.bypassSend = true;
     try { button.click(); } finally { state.bypassSend = false; }
@@ -583,6 +630,7 @@
     if (!state.accountId) return;
     state.snapshot = await send("snapshot");
     state.networkIssue = state.snapshot.alerts?.issue || null;
+    currentRequestIssue();
     if (!state.networkIssue) root.querySelector(".dtw-request-notice")?.remove();
     window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ paused: state.snapshot.settings.automationPaused,
       issue: state.networkIssue, allowCurrentTask: state.automationRunning || state.rolloverRunning || state.pendingSend }) }));
@@ -819,6 +867,7 @@
   async function doProjectSend(editor, prompt, jobId) {
     const original = editorText(editor);
     try {
+      requireSendAllowed();
       setEditor(editor, prompt);
       state.submittedAtMs = Date.now();
       await submit(editor);
@@ -843,6 +892,7 @@
     state.pendingSend = true;
     const rawInput = editorText(editor).trim();
     try {
+      requireSendAllowed();
       if (!currentId() && newChatMemoryEnabled() && !state.pendingNewProjectId) {
         state.pickerSessionId = NEW_CHAT; renderModal(); return;
       }
@@ -882,7 +932,7 @@
           await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: route });
           reportedAutomationId = route;
         }
-        if (state.networkIssue && (state.networkIssue.code !== "RATE_LIMITED" || state.networkIssue.untilMs > Date.now())) throw new Error(state.networkIssue.message);
+        requireSendAllowed();
         const nodes = messageNodes();
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
         if (text.length > 2 && !isGenerating()) {
@@ -926,7 +976,7 @@
       if (!await doProjectSend(editor, message.prompt, message.jobId)) return;
       const startedAt = Date.now(); let stable = ""; let stableAt = 0;
       while (Date.now() - startedAt < 360000) {
-        if (state.networkIssue && (state.networkIssue.code !== "RATE_LIMITED" || state.networkIssue.untilMs > Date.now())) throw new Error(state.networkIssue.message);
+        requireSendAllowed();
         const last = messageNodes().at(-1); const text = last && messageRole(last) === "ASSISTANT" ? nodeText(last) : "";
         if (text && !isGenerating()) {
           if (text === stable && Date.now() - stableAt > 3000) {
@@ -944,7 +994,7 @@
     } catch (error) { await send("send-status", { jobId: message.jobId, error: error.message }).catch(() => {}); }
     finally { state.rolloverRunning = false; }
   }
-  async function waitEditor() { for (let i = 0; i < 100; i++) { const editor = findEditor(); if (editor) return editor; await delay(300); } throw new Error("找不到 DSW 输入框"); }
+  async function waitEditor() { for (let i = 0; i < 100; i++) { requireSendAllowed(); const editor = findEditor(); if (editor) return editor; await delay(300); } throw new Error("找不到 DSW 输入框"); }
 
   function positionMenu(menu, anchor) {
     if (!anchor?.isConnected) return;
@@ -1248,6 +1298,7 @@
         reply({ ok: false, error: "页面账号不匹配或正在执行任务" }); return false;
       }
       (async () => {
+        requireSendAllowed();
         let slot = await send("history-request-slot", { userAction: false });
         while (slot.waitMs > 0 && !slot.blocked) { await delay(slot.waitMs); slot = await send("history-request-slot", { userAction: false }); }
         if (slot.blocked) throw new Error(slot.message);
@@ -1267,14 +1318,14 @@
       return false;
     }
     if (message?.type === "dtw:automation") {
-      const issue = state.networkIssue;
-      if (issue && (issue.code !== "RATE_LIMITED" || issue.untilMs > Date.now())) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
+      const issue = currentRequestIssue();
+      if (issue) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
       reply({ ok: Boolean(state.accountId), code: state.accountId ? undefined : "NOT_READY" });
       if (state.accountId && !state.automationRunning) runAutomation(message); return false;
     }
     if (message?.type === "dtw:rollover") {
-      const issue = state.networkIssue;
-      if (issue && (issue.code !== "RATE_LIMITED" || issue.untilMs > Date.now())) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
+      const issue = currentRequestIssue();
+      if (issue) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
       reply({ ok: Boolean(state.accountId), code: state.accountId ? undefined : "NOT_READY" });
       if (state.accountId && !state.rolloverRunning && !state.automationRunning) runRollover(message); return false;
     }
@@ -1316,6 +1367,8 @@
         state.snapshot = null; state.sessionTimes.clear(); state.dirtySessions.clear(); state.importedIds.clear(); restoreNativeSessions();
       }
       state.accountId = accountId; state.startupFailed = false;
+      currentRequestIssue();
+      await restrictionReport;
       const collapseKey = `dtw.collapsed:${accountId}`;
       const saved = (await chrome.storage.local.get(collapseKey))[collapseKey];
       state.collapsed = new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []);
@@ -1337,6 +1390,7 @@
   async function start() {
     if (!document.body) { await new Promise((resolve) => new MutationObserver((_, observer) => { if (document.body) { observer.disconnect(); resolve(); } }).observe(document.documentElement, { childList: true })); }
     document.body.append(root);
+    currentRequestIssue();
     new MutationObserver(showLoadingTree).observe(document.body, { childList: true, subtree: true });
     let uiSyncScheduled = false;
     const scheduleUiSync = () => {
@@ -1344,6 +1398,7 @@
       uiSyncScheduled = true;
       requestAnimationFrame(() => {
         uiSyncScheduled = false;
+        currentRequestIssue();
         syncNativeMenu();
         syncRoute();
         if (!state.snapshot) return;
@@ -1352,7 +1407,8 @@
         if (state.messageInfoPending && renderMessageInfo()) state.messageInfoPending = false;
       });
     };
-    new MutationObserver(scheduleUiSync).observe(document.body, { childList: true, subtree: true });
+    new MutationObserver(scheduleUiSync).observe(document.body, { childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ["disabled", "aria-disabled", "contenteditable", "placeholder", "hidden"] });
     observeMessageDisplay();
     window.addEventListener("popstate", scheduleUiSync);
     window.navigation?.addEventListener("currententrychange", scheduleUiSync);
@@ -1362,6 +1418,7 @@
     if (account?.accountId) await initializeAccount(account.accountId, account.observedAtMs);
     else { state.startupFailed = true; restoreNativeSessions(); showToast("等待原生页面的登录信息，插件不会主动验证登录", 10000); }
     setInterval(async () => {
+      currentRequestIssue();
       if (!chrome.runtime?.id || !state.accountId || state.syncingUi) return;
       state.syncingUi = true;
       try { if (!state.automationRunning && !state.rolloverRunning) await syncVisibleSessions();
