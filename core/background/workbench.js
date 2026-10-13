@@ -433,13 +433,25 @@ async function unmarkAutomationSession(accountId, message) {
   return { ok: true };
 }
 
-async function observeSession(accountId, message) {
+async function observeSession(accountId, message, sender = {}) {
   const sessionId = clean(message.sessionId, 100);
   if (!sessionId) throw new Error("缺少会话 ID");
   const previous = await DB.get("sessions", key(accountId, sessionId));
   // Old sidebar nodes and delayed title scans must not resurrect a deletion.
   if (previous?.deleted) return { ok: true, ignored: true };
   if (!previous && !message.newSession && !message.loadedHistory) return { ok: true, ignored: true };
+  const route = sender.tab?.url?.match(/\/chat\/s\/([^/?#]+)/)?.[1];
+  if (route === sessionId) {
+    const job = (await DB.all("jobs", accountId)).find((entry) => ["CLASSIFY", "DISTILL", "COMPACT"].includes(entry.type)
+      && entry.status === "RUNNING" && entry.tabId === sender.tab.id && entry.sourceSessionId !== sessionId
+      && (!entry.automationSessionId || entry.automationSessionId === sessionId));
+    if (job) {
+      // Register helper chats before they can shift the latest ordinary session and start a replay.
+      await recordAutomationSession(accountId, job, sessionId);
+      await DB.put("jobs", job);
+      return { ok: true, created: !previous, automation: true };
+    }
+  }
   const wasLoadedHistory = Boolean(previous?.loadedHistory);
   const session = previous || { accountId, sessionId, purpose: "USER", title: null, titleType: "WIP", currentMessageId: null,
     updatedAtMs: null, seenAtMs: NOW(), deleted: false, classificationPending: false,
@@ -551,7 +563,7 @@ async function observeHistory(accountId, message) {
       }
     }
   }
-  if (!message.deferMemoryUpdate && (oldCreatedAtMs !== session.createdAtMs
+  if (session.purpose === "USER" && !message.deferMemoryUpdate && (oldCreatedAtMs !== session.createdAtMs
     || oldSource !== sessionSourceText(await currentBranch(accountId, sessionId)))) await refreshSessionMemory(accountId);
   return { ok: true };
 }
@@ -1361,7 +1373,7 @@ const handlers = {
   "membership-move": moveSession,
   "automation-mark": (a, m) => mutateMemories(a, () => markAutomationSession(a, m)),
   "automation-unmark": (a, m) => mutateMemories(a, () => unmarkAutomationSession(a, m)),
-  "session-observe": (a, m) => mutateMemories(a, () => observeSession(a, m)),
+  "session-observe": (a, m, s) => mutateMemories(a, () => observeSession(a, m, s)),
   "session-times-observe": (a, m) => mutateMemories(a, () => observeSessionTimes(a, m)),
   "history-observe": (a, m) => mutateMemories(a, () => observeHistory(a, m)),
   "memory-reconcile": reconcileStoredMemory,

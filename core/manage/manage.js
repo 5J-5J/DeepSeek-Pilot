@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
+  const replaceChildren = (id, ...children) => DTWUI.replaceChildren($(id), ...children);
   let accountId = ""; let data = null; let scope = "PERSONAL"; let projectId = null;
   let loadRevision = 0; let editingCategory = null; let selectionMode = false;
   const selectedIds = new Set();
@@ -27,8 +28,8 @@
     $("selectAll").checked = memories.length > 0 && memories.every((memory) => selectedIds.has(memory.memoryId));
     $("selectAll").indeterminate = selectedIds.size > 0 && !$("selectAll").checked;
     $("deleteSelected").disabled = selectedIds.size === 0;
-    $("deleteSelected").textContent = `删除所选（${selectedIds.size}）`;
-    $("selectionCount").textContent = `当前范围 ${memories.length} 条`;
+    replaceChildren("deleteSelected", `删除所选（${selectedIds.size}）`);
+    replaceChildren("selectionCount", `当前范围 ${memories.length} 条`);
     document.querySelector(".memory-selection").hidden = !selectionMode;
   }
   const statusFor = (memory) => memory.state === "ACTIVE" ? "生效" : memory.budgetLimited ? "超出预算，已停用"
@@ -36,10 +37,12 @@
       : memory.state === "STALE" ? "来源已变" : "待确认";
   function memoryEntry(memory) {
     const card = document.createElement("article"); card.className = "memory-entry";
+    card.dataset.entryId = memory.memoryId;
     if (selectionMode) {
       card.classList.add("selectable");
       const checkbox = document.createElement("input"); checkbox.type = "checkbox";
       checkbox.checked = selectedIds.has(memory.memoryId); checkbox.setAttribute("aria-label", `选择记忆：${memory.content}`);
+      checkbox.toggleAttribute("checked", checkbox.checked);
       checkbox.onchange = () => { checkbox.checked ? selectedIds.add(memory.memoryId) : selectedIds.delete(memory.memoryId); renderSelection(); };
       card.append(checkbox);
     }
@@ -73,7 +76,7 @@
       }
       return section;
     });
-    $("memories").replaceChildren(...sections);
+    replaceChildren("memories", ...sections);
   }
   function render() {
     const userProjects = data.projects.filter((project) => !project.systemKind)
@@ -81,15 +84,16 @@
         || (b.updatedAtMs ?? b.createdAtMs ?? 0) - (a.updatedAtMs ?? a.createdAtMs ?? 0)
         || a.name.localeCompare(b.name, "zh"));
     if (projectId && !userProjects.some((project) => project.projectId === projectId)) { projectId = null; scope = "PERSONAL"; }
-    $("accountInfo").textContent = `数据账号：${accountId} · ${userProjects.length} 个项目`;
-    $("sourceInfo").textContent = data.legacyMigration?.status === "other-account"
+    replaceChildren("accountInfo", `数据账号：${accountId} · ${userProjects.length} 个项目`);
+    replaceChildren("sourceInfo", data.legacyMigration?.status === "other-account"
       ? "旧版数据已归入此前使用的账号；请确认当前 DeepSeek 账号。"
       : data.legacyMigration?.status === "error" ? `旧版数据迁移失败：${data.legacyMigration.error}`
-        : userProjects.length ? "" : "暂无项目";
+        : userProjects.length ? "" : "暂无项目");
     const scopes = [{ id: null, name: "个人记忆" }, ...userProjects
       .map((project) => ({ id: project.projectId, name: project.name, archived: project.archived }))];
-    $("scopes").replaceChildren(...scopes.map((item) => {
+    replaceChildren("scopes", ...scopes.map((item) => {
       const button = document.createElement("button");
+      button.dataset.projectId = item.id || "";
       const count = item.id ? data.memories.filter((memory) => memory.scope === "PROJECT" && memory.projectId === item.id).length
         : data.memories.filter((memory) => memory.scope === "PERSONAL").length;
       button.textContent = `${item.name}（${count}）${item.archived ? " · 已归档" : ""}`;
@@ -97,7 +101,7 @@
       button.onclick = () => { selectedIds.clear(); selectionMode = false; projectId = item.id; scope = item.id ? "PROJECT" : "PERSONAL"; render(); };
       return button;
     }));
-    $("scopeTitle").textContent = scopes.find((item) => item.id === projectId)?.name || "个人记忆";
+    replaceChildren("scopeTitle", scopes.find((item) => item.id === projectId)?.name || "个人记忆");
     const project = data.projects.find((item) => item.projectId === projectId);
     const queue = scope === "PERSONAL" ? data.projects.find((item) => item.systemKind === "PERSONAL") : project;
     const pending = scope === "PERSONAL" ? (queue?.pendingSessionRefs || []).filter((ref) => !ref.scopes || ref.scopes.includes("PERSONAL")).length
@@ -128,7 +132,7 @@
       ? `本地保留最近 ${protection.snapshotCount} 份记忆快照，自动检查并补回缺失或损坏的条目，不重新调用模型。主动删除会记录删除意图，并清除快照中的对应内容；手动补充或导入可重新保留。${protection.lastRecovery ? `最近在 ${new Date(protection.lastRecovery.recoveredAtMs).toLocaleString()} 恢复 ${protection.lastRecovery.restored} 条。` : ""}${protection.unavailable ? `有 ${protection.unavailable} 条因来源或项目已变化而未恢复。` : ""}浏览器本地数据整体被清除时，快照也会丢失。`
       : "";
     DTWUI.setHelp($("scopeDetails"), `${details}。记忆按类别整理，类别内优先显示固定和生效条目。可编辑整个类别，批量删除位于「更多」中。${recoveryHint}`);
-    $("scopeSummary").textContent = `${selected().length} 条记忆 · 待更新 ${pending} 个会话${running ? ` · ${progress}` : ""}`;
+    replaceChildren("scopeSummary", `${selected().length} 条记忆 · 待更新 ${pending} 个会话${running ? ` · ${progress}` : ""}`);
     $("distill").hidden = false;
     $("distill").disabled = running;
     const memories = selected();

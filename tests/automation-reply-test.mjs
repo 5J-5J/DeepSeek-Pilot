@@ -1,0 +1,83 @@
+/** Offline automation clock/history fixtures; no DeepSeek requests. */
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+
+const source = await readFile(new URL("../core/content/workbench.js", import.meta.url), "utf8");
+const startCall = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error));';
+assert.ok(source.includes(startCall));
+
+async function run({ finishAt = Infinity, generating = false, hiddenAnswer = false, historyError = null, changing = false } = {}) {
+  const started = 1000000;
+  let clock = started;
+  let submitted = false;
+  const requests = []; const polls = []; const sleeps = [];
+  const raw = '{"memories":[]}';
+  const answer = {};
+  class Clock extends Date { static now() { return clock; } }
+  const scenario = {
+    route: () => submitted ? "helper" : "",
+    nodes: () => submitted && !hiddenAnswer ? [answer] : [],
+    text: () => clock - started >= finishAt ? raw : changing ? `partial ${clock}` : "partial",
+    generating: () => generating && clock - started < finishAt,
+    submit: () => { submitted = true; },
+    sleep: async ms => { sleeps.push(ms); clock += ms; assert.ok(clock - started < 1800000, "任务应完成或报告停滞"); },
+    history: async () => {
+      polls.push(clock - started);
+      if (historyError) throw Object.assign(new Error("模拟历史请求失败"), { code: historyError });
+      return { conversationId: "helper", currentMessageId: 2, records: [{ messageId: 2, role: "ASSISTANT",
+        status: clock - started >= finishAt ? "FINISHED" : "GENERATING",
+        fragments: [{ type: "RESPONSE", content: clock - started >= finishAt ? raw : "partial" }] }] };
+    },
+    send: async (type, body) => { requests.push({ type, ...body, elapsed: clock - started }); return { ok: true }; },
+  };
+  const context = vm.createContext({ window: new EventTarget(), location: { href: "https://chat.deepseek.com/" },
+    crypto: globalThis.crypto, CustomEvent, URL, setTimeout, clearTimeout, Date: Clock, console, scenario,
+    document: { createElement: () => ({}), head: { append() {} }, querySelectorAll: () => [],
+      querySelector: () => null, addEventListener() {} },
+    chrome: { runtime: { getURL: path => path, onMessage: { addListener() {} } } },
+  });
+  const fixtureSource = source.replace("const currentId =", "let currentId =")
+    .replace("const delay =", "let delay =").replace("const send =", "let send =");
+  vm.runInContext(fixtureSource.replace(startCall, `
+    globalThis.fixture = { state, runAutomation };
+    currentId = scenario.route;
+    waitEditor = async () => ({});
+    arm = async () => ({ marker: "marker", requestId: "request" });
+    waitEvent = async () => ({});
+    setEditor = () => {};
+    submit = scenario.submit;
+    messageNodes = scenario.nodes;
+    messageRole = () => "ASSISTANT";
+    nodeText = scenario.text;
+    isGenerating = scenario.generating;
+    history = scenario.history;
+    requireSendAllowed = () => {};
+    delay = scenario.sleep;
+    send = scenario.send;
+    cancel = () => {};
+    findEditor = () => null;
+  `), context);
+  await context.fixture.runAutomation({ jobId: "job", prompt: "模拟整理请求" });
+  assert.equal(context.fixture.state.automationRunning, false);
+  assert.equal(context.fixture.state.automationJobId, null);
+  assert.ok(sleeps.every(ms => ms === 5000), "页面状态每 5 秒检查一次");
+  assert.ok(polls.slice(1).every((elapsed, index) => elapsed - polls[index] >= 30000), "历史请求最多每 30 秒一次");
+  assert.equal(requests.filter(request => request.type === "automation-result").length, 1);
+  return requests.find(request => request.type === "automation-result");
+}
+
+let result = await run({ finishAt: 12 * 60000, generating: true });
+assert.equal(result.raw, '{"memories":[]}');
+assert.ok(result.elapsed >= 12 * 60000, "持续生成超过旧的 6 分钟上限仍等待完成");
+result = await run({ finishAt: 12 * 60000, changing: true });
+assert.equal(result.error, undefined, "正文持续变化时，即使没有停止按钮也继续等待");
+result = await run({ finishAt: 120000, hiddenAnswer: true });
+assert.equal(result.raw, '{"memories":[]}', "DOM 消息未匹配时从历史中的 FINISHED 回答获取结果");
+assert.ok(result.elapsed >= 120000, "稳定的残缺正文或 GENERATING 历史不能提前完成");
+result = await run();
+assert.match(result.error, /连续 10 分钟/);
+assert.ok(result.elapsed >= 600000);
+result = await run({ historyError: "AUTH_REQUIRED" });
+assert.equal(result.error, "模拟历史请求失败", "登录失效时停止检查而非反复请求");
+console.log("Automation reply checks passed: slow generation, missing DOM, completion status, low-frequency polling and stalls.");

@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
+  const replaceChildren = (id, ...children) => DTWUI.replaceChildren($(id), ...children);
   let accountId = "";
   let savedSettings = null;
   let queuePaused = false; let queueLoading = false;
@@ -51,19 +52,21 @@
     const issue = data.alerts?.issue;
     const unfinished = data.jobs.filter((job) => ["FAILED", "NEEDS_REVIEW"].includes(job.status)).length;
     $("automationAlert").hidden = !issue && !unfinished;
-    $("automationAlertTitle").textContent = issue ? "插件请求已暂停" : `${unfinished} 个任务未完成`;
-    $("automationAlertDetail").textContent = issue?.message || "这些任务已跳过，其他任务继续按顺序执行。请在下方核对、重试或忽略。";
+    replaceChildren("automationAlertTitle", issue ? "插件请求已暂停" : `${unfinished} 个任务未完成`);
+    replaceChildren("automationAlertDetail", issue?.message || "这些任务已跳过，其他任务继续按顺序执行。请在下方核对、重试或忽略。");
     $("viewIssues").hidden = !unfinished;
     $("resumeRequests").hidden = issue?.code !== "ACCOUNT_RESTRICTED";
     queuePaused = Boolean(data.settings.automationPaused);
-    $("pauseQueue").textContent = queuePaused ? "继续队列" : "暂停队列";
+    replaceChildren("pauseQueue", queuePaused ? "继续队列" : "暂停队列");
     const all = data.jobs.filter((job) => ["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"].includes(job.type));
     const queued = all.filter((job) => job.status === "QUEUED").sort((a, b) =>
       (a.queueOrder ?? a.createdAtMs) - (b.queueOrder ?? b.createdAtMs) || a.jobId.localeCompare(b.jobId));
     const running = all.filter((job) => ["PENDING", "RUNNING"].includes(job.status));
-    $("queueSummary").textContent = `${queuePaused ? "已暂停" : "运行中"} · ${running.length} 个执行中 · ${queued.length} 个等待 · ${all.filter((job) => ["FAILED", "NEEDS_REVIEW"].includes(job.status)).length} 个需处理（见下方）`;
+    replaceChildren("queueSummary", `${queuePaused ? "已暂停" : "运行中"} · ${running.length} 个执行中 · ${queued.length} 个等待 · ${all.filter((job) => ["FAILED", "NEEDS_REVIEW"].includes(job.status)).length} 个需处理（见下方）`);
     const rowFor = (job, index = -1) => {
       const row = document.createElement("div"); row.className = "row wrap";
+      row.dataset.jobId = job.jobId; row.dataset.accountId = accountId;
+      row.dataset.tabId = String(job.tabId ?? "");
       const title = document.createElement("strong");
       title.textContent = `${index >= 0 ? `等待 ${index + 1} · ` : ""}${jobName(job)} · ${({ RUNNING: "执行中", PENDING: "待启动", DONE: "完成", CANCELLED: "已取消", DISMISSED: "已忽略", QUEUED: "排队中", FAILED: "失败", NEEDS_REVIEW: "需要核对" })[job.status] || job.status}`;
       const detail = document.createElement("span"); detail.className = "muted";
@@ -95,9 +98,9 @@
       }
       row.append(actions); return row;
     };
-    $("automationQueue").replaceChildren(...running.map((job) => rowFor(job)), ...queued.map(rowFor));
-    if (!running.length && !queued.length) $("automationQueue").textContent = "当前没有等待或运行中的自动化任务";
-    $("queueHistory").replaceChildren(...all.filter((job) => ["DONE", "CANCELLED", "DISMISSED"].includes(job.status))
+    replaceChildren("automationQueue", ...(!running.length && !queued.length ? ["当前没有等待或运行中的自动化任务"]
+      : [...running.map((job) => rowFor(job)), ...queued.map(rowFor)]));
+    replaceChildren("queueHistory", ...all.filter((job) => ["DONE", "CANCELLED", "DISMISSED"].includes(job.status))
       .sort((a, b) => b.updatedAtMs - a.updatedAtMs).slice(0, 10).map((job) => rowFor(job)));
   }
   async function refreshQueue() {
@@ -143,8 +146,9 @@
   function renderReviewJobs(data) {
     const jobs = data.jobs.filter((job) => ["NEEDS_REVIEW", "FAILED"].includes(job.status))
       .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-    $("jobs").replaceChildren(...jobs.map((job) => {
+    const rows = jobs.map((job) => {
       const row = document.createElement("div"); row.className = "row wrap";
+      row.dataset.jobId = job.jobId; row.dataset.accountId = accountId;
       const name = document.createElement("strong");
       name.textContent = `${jobName(job)} · ${job.status === "FAILED" ? "失败" : "需要核对"}`;
       const session = data.sessions.find((item) => item.sessionId === job.sourceSessionId);
@@ -160,7 +164,7 @@
       const actions = document.createElement("div"); actions.className = "actions";
       if (["SEND", "ROLLOVER"].includes(job.type) && job.rawInput) {
         const draft = document.createElement("textarea");
-        draft.className = "draft-input"; draft.readOnly = true; draft.value = job.rawInput;
+        draft.className = "draft-input"; draft.readOnly = true; draft.defaultValue = job.rawInput;
         draft.setAttribute("aria-label", "原始草稿");
         const copy = document.createElement("button"); copy.textContent = "复制原始草稿";
         copy.onclick = async () => {
@@ -198,8 +202,8 @@
       };
       actions.prepend(ignore); row.append(actions);
       return row;
-    }));
-    if (!jobs.length) $("jobs").textContent = "暂无待核对任务";
+    });
+    replaceChildren("jobs", ...(rows.length ? rows : ["暂无待核对任务"]));
   }
   const checkboxSettings = ["memoryModeDefault", "showPersonalMemory", "showProjectMemory"];
   for (const key of ["maxContextTokens", "warningRatio", "replyReserveTokens", "memoryStartAtMs", ...checkboxSettings]) {

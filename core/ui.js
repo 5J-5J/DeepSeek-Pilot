@@ -3,6 +3,12 @@
   "use strict";
   let nextId = 0;
   const hints = new WeakMap();
+  function replaceChildren(element, ...children) {
+    const nodes = children.map((child) => typeof child === "string" ? document.createTextNode(child) : child);
+    if (element.childNodes.length === nodes.length
+      && nodes.every((node, index) => node.isEqualNode(element.childNodes[index]))) return;
+    element.replaceChildren(...nodes);
+  }
   function setHelp(button, text) {
     let hint = hints.get(button);
     if (!hint) {
@@ -28,9 +34,9 @@
       hint.addEventListener("pointerenter", () => clearTimeout(timer)); hint.addEventListener("pointerleave", leave);
       window.addEventListener("resize", hide); window.addEventListener("scroll", hide, true);
     }
-    hint.textContent = text;
+    replaceChildren(hint, text);
   }
-  globalThis.DTWUI = Object.freeze({ setHelp });
+  globalThis.DTWUI = Object.freeze({ setHelp, replaceChildren });
   for (const button of document.querySelectorAll("[data-help]")) setHelp(button, button.dataset.help);
   for (const menu of document.querySelectorAll(".menu")) {
     menu.addEventListener("click", (event) => { if (event.target.closest("button")) menu.open = false; });

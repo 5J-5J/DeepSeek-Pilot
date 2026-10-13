@@ -26,7 +26,7 @@ const context = vm.createContext({ window: new EventTarget(), location, crypto: 
   testEditor: editor, testButton: button,
   recordSend: prompt => sent.push(prompt), recordNative: () => { nativeSends++; },
 });
-const end = '  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));';
+const end = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error));';
 assert.ok(source.includes(end));
 vm.runInContext(source.replace(end, `
   globalThis.fixture = { state, toasts: [] };

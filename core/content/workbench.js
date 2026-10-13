@@ -999,9 +999,9 @@
       setEditor(editor, command.marker);
       await submit(editor); await applied;
       await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY" });
-      const start = Date.now(); let stable = ""; let stableAt = 0;
-      let lastHeartbeat = start; let reportedAutomationId = "";
-      while (Date.now() - start < 360000) {
+      let lastActivity = Date.now(); let previousText = ""; let historySignature = "";
+      let lastHeartbeat = lastActivity; let lastHistoryCheck = 0; let reportedAutomationId = "";
+      while (true) {
         const route = currentId();
         if (route && route !== reportedAutomationId) {
           await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: route });
@@ -1010,30 +1010,33 @@
         requireSendAllowed();
         const nodes = messageNodes();
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
-        if (text.length > 2 && !isGenerating()) {
-          if (text === stable && Date.now() - stableAt > 3000) {
-            let raw = text;
-            if (route) {
-              try {
-                const saved = await currentHistory();
-                const captured = saved?.records.some((entry) => entry.messageId === saved.currentMessageId && entry.role === "ASSISTANT" && entry.status === "FINISHED")
-                  ? saved : await history(route, { allowEmpty: true });
-                const answer = captured.records.find((entry) => entry.messageId === captured.currentMessageId);
-                if (answer?.role === "ASSISTANT" && answer.status === "FINISHED")
-                  raw = answer.fragments.filter((part) => part.type === "RESPONSE").map((part) => part.content).join("\n\n") || raw;
-              } catch (error) { if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED"].includes(error.code)) throw error; }
+        if (isGenerating() || text !== previousText) lastActivity = Date.now();
+        previousText = text;
+        // History completion survives missing/changed DOM selectors and background-tab throttling.
+        if (route && Date.now() - lastHistoryCheck >= 30000) {
+          try {
+            const saved = state.lastHistory?.conversationId === route ? state.lastHistory : null;
+            const captured = saved?.records.some((entry) => entry.messageId === saved.currentMessageId && entry.role === "ASSISTANT" && entry.status === "FINISHED")
+              ? saved : await history(route, { allowEmpty: true });
+            const answer = captured.records.find((entry) => entry.messageId === captured.currentMessageId);
+            const signature = JSON.stringify(answer || null);
+            if (signature !== historySignature) { historySignature = signature; lastActivity = Date.now(); }
+            const raw = answer?.role === "ASSISTANT" && answer.status === "FINISHED"
+              ? answer.fragments.filter((part) => part.type === "RESPONSE").map((part) => part.content).join("\n\n").trim() : "";
+            if (raw) {
+              await send("automation-result", { jobId: message.jobId, raw, automationSessionId: route }); return;
             }
-            await send("automation-result", { jobId: message.jobId, raw, automationSessionId: route }); return;
-          }
-          if (text !== stable) { stable = text; stableAt = Date.now(); }
+          } catch (error) { if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED", "SESSION_NOT_FOUND"].includes(error.code)) throw error; }
+          finally { lastHistoryCheck = Date.now(); }
         }
-        if (Date.now() - lastHeartbeat > 20000) {
+        if (Date.now() - lastHeartbeat >= 30000) {
           await send("automation-progress", { jobId: message.jobId, phase: "WAITING_REPLY", automationSessionId: route });
           lastHeartbeat = Date.now();
         }
-        await delay(800);
+        if (Date.now() - lastActivity >= 600000)
+          throw new Error("DeepSeek 连续 10 分钟未显示生成状态或新增回复，且未确认历史中的回答已完成；请核对运行会话后重试");
+        await delay(5000);
       }
-      throw new Error("DSW 结构化回答超时");
     } catch (error) {
       if (command) {
         cancel(command.requestId);

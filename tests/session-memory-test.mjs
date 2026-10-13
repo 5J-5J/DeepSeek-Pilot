@@ -328,4 +328,28 @@ assert.ok(resumed, "压缩成功后自动继续旧会话更新");
 assert.equal(resumed.memoryEpoch, 1);
 assert.match(resumed.payload, /身身身身/);
 await finish(resumed, [{ memoryId: resumeFull.memory.memoryId, kind: "资料", content: "身".repeat(1000) }]);
+
+// A helper can appear in the native sidebar before its first progress event arrives.
+storage.accountId = "helper-registration";
+await session("helper-source", 100, ["以后先给结论"], null);
+await session("helper-current", 200, ["仍在聊天，不是旧会话"], null);
+const helperJob = await running();
+assert.ok(helperJob);
+const beforeHelper = (await jobs()).length;
+for (let index = 0; index < 5; index++) {
+  const result = await new Promise(resolve => listener({ type: "dtw:session-observe", accountId: storage.accountId,
+    sessionId: "helper-native", loadedHistory: true, createdAtMs: 300, title: "个人记忆整理" },
+  { tab: { id: helperJob.tabId, url: "https://chat.deepseek.com/a/chat/s/helper-native" } }, resolve));
+  assert.equal(result.ok, true, result.error);
+  await history("helper-native", ["插件整理请求"], false);
+  await ok("memory-reconcile");
+  assert.equal((await jobs()).length, beforeHelper, "辅助会话首次出现及反复同步不会把当前普通会话入队或重建任务");
+}
+assert.equal((await db.get("sessions", [storage.accountId, "helper-native"])).purpose, "MEMORY");
+assert.equal((await db.get("jobs", [storage.accountId, helperJob.jobId])).automationSessionId, "helper-native");
+assert.equal(await db.get("memberships", [storage.accountId, "helper-native"]), null);
+await finish(await running(), []);
+await ok("memory-reconcile");
+assert.equal(await running(), undefined);
+assert.equal((await jobs()).length, beforeHelper, "已完成的同一版本不会因辅助会话同步再次整理");
 console.log("Session memory checks passed: ordering, prompts, full replacement, compression, retries and atomic validation.");

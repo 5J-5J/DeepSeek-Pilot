@@ -229,6 +229,19 @@ ${backgroundSource}
   assert.equal(await evaluate(page, "document.querySelector('#resumeRequests').hidden"), true, "登录失效只通知，不提供登录验证按钮");
   assert.equal(await evaluate(page, "document.querySelector('#viewIssues').hidden"), false);
   assert.match(await evaluate(page, "document.querySelector('#jobs').textContent"), /本地模拟任务未完成/);
+  for (const [selector, waitMs] of [[".memory-entry p", 11000], ["#jobs .row", 5500]]) {
+    const selectedText = await evaluate(page, `(()=>{
+      globalThis.selectedNode=document.querySelector(${JSON.stringify(selector)});
+      const range=document.createRange();range.selectNodeContents(selectedNode);
+      getSelection().removeAllRanges();getSelection().addRange(range);return getSelection().toString();
+    })()`);
+    assert.ok(selectedText.length > 0);
+    await delay(waitMs);
+    assert.equal(await evaluate(page, "getSelection().toString()"), selectedText, "定时刷新保留选中文字");
+    assert.equal(await evaluate(page, `selectedNode===document.querySelector(${JSON.stringify(selector)})`), true,
+      "未变化的记忆和失败任务保留原 DOM 节点");
+  }
+  await evaluate(page, "getSelection().removeAllRanges()");
   await evaluate(page, "scrollTo(0,0)");
   const screenshot = await page.call("Page.captureScreenshot", { format: "png" });
   await fs.writeFile(path.join(root, ".live-fs", "settings-ui.png"), Buffer.from(screenshot.data, "base64"));
@@ -323,7 +336,7 @@ ${backgroundSource}
   const contentSource = (await fs.readFile(path.join(root, "core/content/workbench.js"), "utf8"))
     .replace("  injectPageHook();", "")
     .replace('  const currentId = () => idFromHref(location.href);', '  const currentId = () => globalThis.fixtureRoute ?? "message-edit-session";')
-    .replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));',
+    .replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));',
       "  globalThis.messageDisplayFixture = { state, renderUserMessage, renderMessageInfo, renderMemoryEditors, findEditor, observeMessageDisplay, checkTurn, currentRequestIssue, waitEditor, submit, memorySend, initializeAccount, confirmUserMessage, doProjectSend, mockHistory(fn) { const previous = history; history = fn; return () => { history = previous; }; } };");
   const messageDisplay = await evaluate(page, `(()=>{
     const addListener=chrome.runtime.onMessage.addListener;
