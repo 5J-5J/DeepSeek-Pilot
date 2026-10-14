@@ -619,7 +619,7 @@ ${backgroundSource}
     const restore=fixture.mockHistory(async()=>{reads++;return captured;});
     chrome.runtime.sendMessage=async message=>{
       if(message.type==='dtw:turn-completed')completed++;
-      if(message.type==='dtw:snapshot')return state.snapshot;
+      if(message.type==='dtw:sidebar-snapshot')return state.snapshot;
       return {ok:true};
     };
     try {
@@ -658,7 +658,7 @@ ${backgroundSource}
     chrome.runtime.sendMessage=async message=>{
       requests.push(message);
       if(message.type==='dtw:request-issue')savedIssue=message;
-      if(message.type==='dtw:snapshot')return {ok:true,settings:{automationPaused:true},alerts:{issue:savedIssue},
+      if(message.type==='dtw:sidebar-snapshot' || message.type==='dtw:snapshot')return {ok:true,settings:{automationPaused:true},alerts:{issue:savedIssue},
         sessions:[],memberships:[],memories:[],projects:[],jobs:[]};
       return {ok:true};
     };

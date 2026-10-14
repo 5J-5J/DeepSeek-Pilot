@@ -348,7 +348,8 @@ try {
       globalThis.fixtureSnapshot={ok:true,projects:[],sessions:[],memberships:[],jobs:[],settings:{},alerts:{},memoryListRequired:true};
       globalThis.chrome={runtime:{id:'fixture',getURL:()=>'',onMessage:{addListener(){}},sendMessage:async message=>{
         fixtureRequests.push(message);
-        if(message.type==='dtw:snapshot'){
+        if(message.type==='dtw:snapshot')return new Promise(()=>{});
+        if(message.type==='dtw:sidebar-snapshot'){
           if(fixtureFailure==='snapshot-error')throw new Error('模拟后台读取失败');
           if(fixtureFailure==='snapshot-timeout')return new Promise(()=>{});
           return structuredClone(fixtureSnapshot);

@@ -93,7 +93,7 @@ context.document = { createElement: node, head: node(), addEventListener() {}, q
   querySelectorAll: selector => selector.includes('a[href') ? links : [] };
 context.chrome = { runtime: { getURL: path => path, onMessage: { addListener() {} }, sendMessage: async message => {
   calls.push(message);
-  if (message.type === "dtw:snapshot") return snapshot;
+  if (message.type === "dtw:sidebar-snapshot") return snapshot;
   if (message.type === "dtw:session-list-observe") snapshot.memoryListRequired = false;
   if (message.type === "dtw:session-history") return { ok: true, history: message.sessionId === "valid" ? stored : null };
   if (message.type === "dtw:request-issue") snapshot.alerts.issue = { code: message.code, message: message.message, untilMs: message.untilMs };

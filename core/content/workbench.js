@@ -50,7 +50,7 @@
     const response = chrome.runtime.sendMessage({ type: `dtw:${type}`, accountId: state.accountId, ...body });
     let timer; let result;
     try {
-      result = type === "snapshot" ? await Promise.race([response, new Promise((_, reject) => {
+      result = type === "sidebar-snapshot" ? await Promise.race([response, new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error("插件后台读取超时，请重新加载插件并刷新页面")), 10000);
       })]) : await response;
     } finally { clearTimeout(timer); }
@@ -707,7 +707,7 @@
   async function refresh() {
     if (!state.accountId) return;
     const accountId = state.accountId;
-    const snapshot = await send("snapshot");
+    const snapshot = await send("sidebar-snapshot");
     if (state.accountId !== accountId) return;
     state.snapshot = snapshot;
     state.networkIssue = state.snapshot.alerts?.issue || null;
@@ -1610,6 +1610,9 @@
       await chrome.storage.local.set({ accountId });
       await refresh();
       window.dispatchEvent(new CustomEvent("dtw:session-list-request"));
+      send("snapshot").then(() => {
+        if (state.accountId === accountId) return refresh();
+      }).catch((error) => { if (state.accountId === accountId) showToast(`后台记忆维护失败：${error.message}`); });
       send("request-ready", { observedAtMs }).then(() => {
         if (state.accountId === accountId) return refresh();
       }).catch((error) => { if (state.accountId === accountId) showToast(`后台任务恢复失败：${error.message}`); });

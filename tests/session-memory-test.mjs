@@ -460,4 +460,20 @@ assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["manual-target
 await ok("settings-update", { key: "automationPaused", value: false });
 await finish(await running(), []);
 assert.equal((await jobs()).length, 1, "单会话手动整理完成后也不会提交其他尚未整理的会话");
-console.log("Session memory checks passed: ordering, prompts, full replacement, compression, retries and atomic validation.");
+// UI reads must survive a stalled tab creation while snapshot maintenance holds the memory chain.
+storage.accountId = "blocked-maintenance";
+await db.put("projects", { accountId: storage.accountId, projectId: "visible-project", name: "仍可读取的项目" });
+await db.put("memories", { accountId: storage.accountId, memoryId: "over-budget", scope: "PERSONAL", projectId: null,
+  kind: "偏好", content: "字".repeat(5001), state: "ACTIVE", version: 1, pinnedByUser: true });
+const createTab = chrome.tabs.create; let releaseTab; let tabRequested;
+const creatingTab = new Promise(resolve => { tabRequested = resolve; });
+chrome.tabs.create = async () => { tabRequested(); await new Promise(resolve => { releaseTab = resolve; }); return createTab(); };
+let maintained = false;
+const maintaining = call("snapshot").then(result => { maintained = true; return result; });
+await creatingTab;
+const readable = await ok("sidebar-snapshot");
+assert.equal(maintained, false, "完整快照仍在等待真实队列启动，只读快照独立完成");
+assert.ok(readable.projects.some(row => row.projectId === "visible-project"), "后台维护停滞不能阻塞项目显示");
+assert.equal((await db.all("jobs", storage.accountId)).filter(row => row.type === "COMPACT").length, 1);
+releaseTab(); await maintaining; chrome.tabs.create = createTab;
+console.log("Session memory checks passed: ordering, prompts, full replacement, compression, retries, atomic validation and independent UI reads.");

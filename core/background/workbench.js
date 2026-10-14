@@ -290,6 +290,11 @@ async function snapshot(accountId, recovery) {
   await ensureSessionMemory(accountId);
   recovery ||= await checkMemoryRecovery(accountId);
   await enforcePersonalMemoryBudget(accountId);
+  return readSnapshot(accountId, recovery, legacyMigration);
+}
+
+// UI reads must not wait for memory writes, migrations or tab creation.
+async function readSnapshot(accountId, recovery = { restored: 0, unavailable: 0 }, legacyMigration) {
   const [projects, sessions, memberships, memories, jobs, cfg, metrics] = await Promise.all([
     DB.all("projects", accountId), DB.all("sessions", accountId), DB.all("memberships", accountId),
     DB.all("memories", accountId), DB.all("jobs", accountId), settings(accountId), DB.all("metrics", accountId),
@@ -1373,6 +1378,7 @@ const handlers = {
   },
   "history-request-slot": historyRequestSlot,
   snapshot: (a) => mutateMemories(a, (recovery) => snapshot(a, recovery)),
+  "sidebar-snapshot": (a) => readSnapshot(a),
   "open-options": async () => { await chrome.runtime.openOptionsPage(); return { ok: true }; },
   "project-create": createProject,
   "project-update": updateProject,
