@@ -1248,8 +1248,11 @@ async function prepareSend(accountId, message, sender) {
 async function sendStatus(accountId, message) {
   const job = await DB.get("jobs", key(accountId, message.jobId));
   if (!job || !["SEND", "ROLLOVER"].includes(job.type) || !["PENDING", "RUNNING"].includes(job.status)) throw new Error("发送作业无效");
-  if (job.type === "ROLLOVER" && message.replyFinished && job.phase === "WAITING_REPLY") {
-    job.status = "DONE"; job.updatedAtMs = NOW(); await DB.put("jobs", job); await drainJobQueue();
+  if (job.type === "ROLLOVER" && (message.replyFinished || message.replyProgress) && job.phase === "WAITING_REPLY") {
+    if (message.sessionId && message.sessionId !== job.targetSessionId) throw new Error("接续回复会话与目标不匹配");
+    job.status = message.replyFinished ? "DONE" : "RUNNING";
+    job.updatedAtMs = NOW(); await DB.put("jobs", job);
+    if (message.replyFinished) await drainJobQueue();
     return { ok: true, status: job.status };
   }
   if (message.confirmed && message.sessionId) {

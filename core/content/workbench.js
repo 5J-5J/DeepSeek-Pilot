@@ -922,6 +922,7 @@
             }
             await send("send-status", { jobId, confirmed: true, sessionId: id,
               userMessageId: stored ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
+            if (state.rolloverRunning) state.rolloverSessionId = id;
             if (state.pendingNewProjectId) {
               state.pendingNewProjectId = "";
               state.pendingNewConversationAt = 0;
@@ -1063,28 +1064,55 @@
   }
   async function runRollover(message) {
     state.rolloverRunning = true;
+    state.rolloverSessionId = "";
+    let targetId = "";
     try {
       const editor = await waitEditor();
       if (!await doProjectSend(editor, message.prompt, message.jobId)) return;
-      const startedAt = Date.now(); let stable = ""; let stableAt = 0;
-      while (Date.now() - startedAt < 360000) {
+      targetId = state.rolloverSessionId || currentId();
+      if (!targetId) throw new Error("接续发送后未取得后继会话 ID，请核对会话");
+      let lastActivity = Date.now(); let previousText = ""; let signature = "";
+      let lastHeartbeat = lastActivity; let lastHistoryCheck = 0; let lastHistoryError = "";
+      while (true) {
         requireSendAllowed();
-        const last = messageNodes().at(-1); const text = last && messageRole(last) === "ASSISTANT" ? nodeText(last) : "";
-        if (text && !isGenerating()) {
-          if (text === stable && Date.now() - stableAt > 3000) {
-            const saved = await currentHistory();
+        const onTargetPage = currentId() === targetId;
+        const last = onTargetPage ? messageNodes().at(-1) : null;
+        const text = last && messageRole(last) === "ASSISTANT" ? nodeText(last) : "";
+        if (onTargetPage && (isGenerating() || text !== previousText)) lastActivity = Date.now();
+        previousText = text;
+        if (Date.now() - lastHistoryCheck >= 30000) {
+          let finished = null;
+          try {
+            const saved = state.lastHistory?.conversationId === targetId ? state.lastHistory : null;
             const captured = saved?.records.some((entry) => entry.messageId === saved.currentMessageId && entry.role === "ASSISTANT" && entry.status === "FINISHED")
-              ? saved : await history(currentId(), { allowEmpty: true });
-            await saveObservedHistory(currentId(), captured);
-            await send("send-status", { jobId: message.jobId, replyFinished: true }); await refresh(); return;
+              ? saved : await history(targetId, { allowEmpty: true });
+            lastHistoryError = "";
+            const answer = captured.records.find((entry) => entry.messageId === captured.currentMessageId);
+            const nextSignature = JSON.stringify(answer || null);
+            if (signature !== nextSignature) { signature = nextSignature; lastActivity = Date.now(); }
+            if (answer?.role === "ASSISTANT" && answer.status === "FINISHED"
+              && answer.fragments.some((part) => part.type === "RESPONSE" && part.content.trim())) finished = captured;
+          } catch (error) {
+            if (["AUTH_REQUIRED", "RATE_LIMITED", "ACCOUNT_RESTRICTED", "SESSION_NOT_FOUND"].includes(error.code)) throw error;
+            lastHistoryError = error.message;
           }
-          if (text !== stable) { stable = text; stableAt = Date.now(); }
+          finally { lastHistoryCheck = Date.now(); }
+          if (finished) {
+            await saveObservedHistory(targetId, finished);
+            await send("send-status", { jobId: message.jobId, replyFinished: true, sessionId: targetId });
+            await refresh(); return;
+          }
         }
-        await delay(800);
+        if (Date.now() - lastHeartbeat >= 30000) {
+          await send("send-status", { jobId: message.jobId, replyProgress: true, sessionId: targetId });
+          lastHeartbeat = Date.now();
+        }
+        if (Date.now() - lastActivity >= 600000)
+          throw new Error(`接续回复连续 10 分钟无进展；后继会话：${targetId}${lastHistoryError ? `；历史读取失败：${lastHistoryError}` : ""}；请核对会话`);
+        await delay(5000);
       }
-      throw new Error("接续回复超时，请核对会话");
     } catch (error) { await send("send-status", { jobId: message.jobId, error: error.message }).catch(() => {}); }
-    finally { state.rolloverRunning = false; }
+    finally { state.rolloverRunning = false; state.rolloverSessionId = ""; }
   }
   async function waitEditor() { for (let i = 0; i < 100; i++) { requireSendAllowed(); const editor = findEditor(); if (editor) return editor; await delay(300); } throw new Error("找不到 DSW 输入框"); }
 

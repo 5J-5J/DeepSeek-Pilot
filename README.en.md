@@ -31,6 +31,8 @@ Automatic classification is currently disabled; assign chats manually. Memory is
 
 Personal memory prioritizes lasting preferences, response style and collaboration habits. Events are retained only when they matter to long-term life, work or future collaboration, summarized in one or two sentences about the key outcome rather than everyday details or full accounts. Later processing and compression also review existing unpinned event entries; user-pinned entries remain protected.
 
+With project memory enabled, reaching the context budget sends the current question, applicable memories and recent progress to a successor chat in the same project. The matching original draft is cleared only after receipt is confirmed. While waiting, the extension checks the successor's history and reports a heartbeat every 30 seconds; the task ends only when the reply is explicitly finished. Uncertain outcomes retain the original input for review.
+
 Periodic settings refreshes preserve text selections in unchanged content. Memory processing obtains the auxiliary chat ID from the actual outgoing request, checks the page every 5 seconds and checks that specific chat's history completion at most once every 30 seconds, even without visible answer text. It keeps waiting while generation is active or content changes, and reports a stall only after 10 minutes without generation, content progress or confirmed completion, including the target chat and latest history-read error. Auxiliary chats are registered as plugin chats when first identified so they do not trigger repeated processing of regular chats.
 
 ## Installation

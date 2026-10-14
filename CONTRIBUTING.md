@@ -21,6 +21,7 @@ node tests/session-memory-test.mjs
 node tests/automation-cleanup-test.mjs
 node tests/request-body-test.mjs
 node tests/memory-display-test.mjs
+node tests/rollover-test.mjs
 git diff --check
 ```
 
