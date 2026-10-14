@@ -103,7 +103,7 @@ try {
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
     ${uiSource}
-    ${source.replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
+    ${source.replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
       globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});

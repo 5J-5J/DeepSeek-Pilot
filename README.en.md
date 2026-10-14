@@ -20,7 +20,7 @@ The current version is **0.9.0, an early development release**, with these capab
 
 | Module | Available today |
 | --- | --- |
-| Project management | Project tree, manual chat assignment, pins, archives and new chats within projects |
+| Project management | Project tree, always-visible new-project and settings buttons, manual chat assignment, pins, archives and new chats within projects |
 | Cross-chat memory | Separate personal and project memories, with applicable context included in the first message of a new chat |
 | Memory management | Categorized viewing and editing, pinned entries, import/export, personal memory compression and local snapshots |
 | Conversation continuation | Switch to a new chat at the configured context budget and include applicable memory |
