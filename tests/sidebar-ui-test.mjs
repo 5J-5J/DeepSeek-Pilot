@@ -332,7 +332,67 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 0, "官方空列表不显示本地旧会话");
   await evaluate("document.querySelector('#native-history').replaceChildren();fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-tree [data-action=create-project]'))"), true, "没有官方会话时仍可管理项目");
-  console.log(JSON.stringify({ ok: true, checks: "plugin menus open on one click, refreshed anchors, original callbacks without visible dropdowns, pin state, hints, archives and viewport" }));
+  // Exercise the production entry point as well as the isolated rendering helpers above.
+  for (const failure of ["queue", "snapshot-error", "snapshot-timeout"]) {
+    await page.call("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/a/chat?startup=${failure}` });
+    await waitFor("启动页面", () => evaluate(`location.search==='?startup=${failure}' && Boolean(document.querySelector('#native-history'))`));
+    await evaluate(`
+      globalThis.fixtureRequests=[];globalThis.fixtureFailure=${JSON.stringify(failure)};
+      globalThis.fixtureRelease=null;globalThis.fixtureClicks=0;globalThis.fixtureKeys=0;
+      const nativeTimer=window.setTimeout.bind(window);
+      window.setTimeout=(fn,ms,...args)=>nativeTimer(fn,ms===10000?100:ms,...args);
+      const composer=document.createElement('div');composer.innerHTML='<textarea placeholder="给 DeepSeek 发送消息">测试</textarea><button aria-label="发送">发送</button>';
+      document.body.append(composer);
+      composer.querySelector('button').addEventListener('click',()=>fixtureClicks++);
+      composer.querySelector('textarea').addEventListener('keydown',()=>fixtureKeys++);
+      globalThis.fixtureSnapshot={ok:true,projects:[],sessions:[],memberships:[],jobs:[],settings:{},alerts:{},memoryListRequired:true};
+      globalThis.chrome={runtime:{id:'fixture',getURL:()=>'',onMessage:{addListener(){}},sendMessage:async message=>{
+        fixtureRequests.push(message);
+        if(message.type==='dtw:snapshot'){
+          if(fixtureFailure==='snapshot-error')throw new Error('模拟后台读取失败');
+          if(fixtureFailure==='snapshot-timeout')return new Promise(()=>{});
+          return structuredClone(fixtureSnapshot);
+        }
+        if(message.type==='dtw:request-ready')return new Promise(()=>{});
+        if(message.type==='dtw:session-list-observe'){
+          await new Promise(resolve=>fixtureRelease=resolve);fixtureSnapshot.memoryListRequired=false;
+        }
+        return {ok:true};
+      }},storage:{local:{get:async()=>({}),set:async()=>{}}}};
+      window.addEventListener('dtw:profile-request',event=>window.dispatchEvent(new CustomEvent('dtw:profile-result',
+        {detail:JSON.stringify({...JSON.parse(event.detail),accountId:'startup-account'})})));
+      window.addEventListener('dtw:session-list-request',()=>window.dispatchEvent(new CustomEvent('dtw:session-list',
+        {detail:JSON.stringify({accountId:'startup-account',sessions:[{sessionId:'s1',title:'官方会话'}]})})));
+      ${historySource}
+      ${uiSource}
+      ${source}
+    `);
+    if (failure === "queue") {
+      await waitFor("队列阻塞时侧栏仍可用", () => evaluate("Boolean(document.querySelector('[data-action=open-options]'))"));
+      await click("open-options");
+      assert.equal(await evaluate("fixtureRequests.some(message=>message.type==='dtw:open-options')"), true);
+      await waitFor("官方会话立即显示", () => evaluate("document.querySelector('[data-session=s1]')?.textContent.includes('官方会话')"));
+      assert.equal(await evaluate("fixtureRequests.filter(message=>message.type==='dtw:session-list-observe').length"), 1, "同步未完成时不重复提交列表");
+      await evaluate("window.dispatchEvent(new CustomEvent('dtw:session-list',{detail:JSON.stringify({accountId:'startup-account',sessions:[{sessionId:'s2',title:'更新后的官方列表'}]})}))");
+      assert.equal(await evaluate("Boolean(document.querySelector('[data-session=s2]')) && !document.querySelector('[data-session=s1]')"), true);
+      assert.equal(await evaluate("fixtureRequests.filter(message=>message.type==='dtw:session-list-observe').length"), 1);
+      await evaluate("fixtureRelease()");
+      await waitFor("同步结束后补交最新列表", () => evaluate("fixtureRequests.filter(message=>message.type==='dtw:session-list-observe').length===2"));
+      assert.deepEqual(await evaluate("fixtureRequests.findLast(message=>message.type==='dtw:session-list-observe').sessions.map(row=>row.sessionId)"), ["s2"]);
+      await evaluate("fixtureRelease()");
+    } else {
+      if (failure === "snapshot-timeout") {
+        assert.equal(await evaluate("document.querySelector('#native-history').style.display"), "", "等待读取期间保留原生列表");
+      }
+      await waitFor("启动失败恢复原生列表", () => evaluate("!document.querySelector('.dtw-loading') && document.querySelector('#native-history').style.display!== 'none'"));
+      assert.match(await evaluate("document.querySelector('.dtw-toast')?.textContent || ''"), /失败|超时/);
+      await evaluate("document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));document.querySelector('button[aria-label=发送]').click()");
+      assert.equal(await evaluate("fixtureClicks===1 && fixtureKeys===1"), true, "初始化失败不能拦截原生发送");
+      await evaluate("fixtureFailure='queue';window.dispatchEvent(new CustomEvent('dtw:account-ready',{detail:JSON.stringify({accountId:'startup-account'})}))");
+      await waitFor("收到账号通知后恢复插件", () => evaluate("Boolean(document.querySelector('[data-action=open-options]'))"));
+    }
+  }
+  console.log(JSON.stringify({ ok: true, checks: "sidebar interactions; production startup with blocked queue, failed/timed-out snapshot and account recovery" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});
   page?.close(); browser?.close(); chrome.kill();

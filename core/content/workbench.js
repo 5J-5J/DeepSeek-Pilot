@@ -47,7 +47,13 @@
   const parse = (event) => { try { return JSON.parse(event.detail); } catch { return null; } };
   const send = async (type, body = {}) => {
     if (!state.accountId) throw new Error("无法确认 DeepSeek 账号");
-    const result = await chrome.runtime.sendMessage({ type: `dtw:${type}`, accountId: state.accountId, ...body });
+    const response = chrome.runtime.sendMessage({ type: `dtw:${type}`, accountId: state.accountId, ...body });
+    let timer; let result;
+    try {
+      result = type === "snapshot" ? await Promise.race([response, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("插件后台读取超时，请重新加载插件并刷新页面")), 10000);
+      })]) : await response;
+    } finally { clearTimeout(timer); }
     if (result == null) throw new Error(`插件后台未响应「${type}」。请在扩展管理页重新加载插件，然后刷新 DeepSeek 页面`);
     if (result?.ok === false) throw new Error(result.error || "操作失败");
     return result;
@@ -152,16 +158,12 @@
     if (state.startupFailed) return;
     const list = listContainer();
     if (!list) return;
-    if (list.querySelector(":scope > .dtw-tree")) {
-      if (!state.snapshot) hideNativeSessions(list);
-      return;
-    }
+    if (list.querySelector(":scope > .dtw-tree")) return;
     if (state.snapshot) { renderTree(); return; }
     const tree = document.createElement("section");
     tree.className = "dtw-tree dtw-owned";
     tree.innerHTML = '<div class="dtw-tools"><strong>项目</strong></div><div class="dtw-loading">正在加载会话…</div>';
     list.prepend(tree);
-    hideNativeSessions(list);
   }
   function restoreNativeSessions() {
     document.querySelectorAll(".dtw-tree").forEach((tree) => tree.remove());
@@ -686,13 +688,28 @@
     observer.observe(document.body, { childList: true, characterData: true, subtree: true });
     return observer;
   }
+  let officialListSync = null;
+  let syncedOfficialSessions = null;
+  function syncOfficialSessions() {
+    if (officialListSync || !state.snapshot || !state.officialSessions || state.automationRunning || state.rolloverRunning) return;
+    const accountId = state.accountId; const sessions = state.officialSessions;
+    officialListSync = send("session-list-observe", { sessions: [...sessions.values()] }).then(async (result) => {
+      if (state.accountId !== accountId) return;
+      if (!result.ignored) syncedOfficialSessions = sessions;
+      await refresh(); await syncVisibleSessions(); await syncSessionTimes();
+    }).catch((error) => {
+      if (state.accountId === accountId) showToast(`会话归属同步失败：${error.message}`);
+    }).finally(() => {
+      officialListSync = null;
+      if (state.accountId !== accountId || state.officialSessions !== sessions) syncOfficialSessions();
+    });
+  }
   async function refresh() {
     if (!state.accountId) return;
-    state.snapshot = await send("snapshot");
-    if (state.snapshot.memoryListRequired && state.officialSessions && !state.automationRunning && !state.rolloverRunning) {
-      await send("session-list-observe", { sessions: [...state.officialSessions.values()] });
-      state.snapshot = await send("snapshot");
-    }
+    const accountId = state.accountId;
+    const snapshot = await send("snapshot");
+    if (state.accountId !== accountId) return;
+    state.snapshot = snapshot;
     state.networkIssue = state.snapshot.alerts?.issue || null;
     currentRequestIssue();
     if (!state.networkIssue) root.querySelector(".dtw-request-notice")?.remove();
@@ -700,6 +717,8 @@
       issue: state.networkIssue, allowCurrentTask: state.automationRunning || state.rolloverRunning || state.pendingSend }) }));
     for (const session of state.snapshot.sessions) state.importedIds.add(session.sessionId);
     renderTree(); renderMemoryButton(); renderMessageInfo(); renderMemoryEditors();
+    // Paint the sidebar before memory reconciliation, which can be queued behind other work.
+    if (state.snapshot.memoryListRequired || state.officialSessions !== syncedOfficialSessions) syncOfficialSessions();
     if (!state.automationRunning && !state.rolloverRunning && !state.pendingSend && !isGenerating()
       && !state.networkIssue && !state.snapshot.settings.automationPaused
       && !state.snapshot.jobs.some((job) => ["QUEUED", "PENDING", "RUNNING"].includes(job.status) && ["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"].includes(job.type))) {
@@ -1448,7 +1467,7 @@
       event.preventDefault(); event.stopImmediatePropagation(); handleAction(action); return;
     }
     if (state.menu && !event.target.closest?.(".dtw-menu")) closeMenu();
-    if (state.bypassSend || state.automationRunning || state.rolloverRunning) return;
+    if (!state.snapshot || state.startupFailed || state.bypassSend || state.automationRunning || state.rolloverRunning) return;
     const editor = findEditor(); const native = editor && nativeSend(editor);
     if (!native || !native.contains(event.target)) return;
     if (!currentId() && editorText(editor).trim()) markPendingNewConversation();
@@ -1468,7 +1487,7 @@
     if (memoryButton && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault(); event.stopImmediatePropagation(); handleAction(memoryButton); return;
     }
-    if (state.bypassSend || state.automationRunning || state.rolloverRunning || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    if (!state.snapshot || state.startupFailed || state.bypassSend || state.automationRunning || state.rolloverRunning || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     const editor = findEditor();
     if (!editor || (event.target !== editor && !editor.contains(event.target))) return;
     if (!currentId() && editorText(editor).trim()) markPendingNewConversation();
@@ -1551,8 +1570,7 @@
     for (const id of state.officialSessions.keys()) state.listedSessionIds.add(id);
     state.hasMoreSessions = Boolean(detail.hasMore);
     renderTree();
-    send("session-list-observe", { sessions: [...state.officialSessions.values()] }).then(refresh)
-      .then(syncVisibleSessions).then(syncSessionTimes).catch((error) => showToast(`会话归属同步失败：${error.message}`));
+    syncOfficialSessions();
   });
   window.addEventListener("dtw:session-times", (event) => {
     const detail = parse(event);
@@ -1590,13 +1608,19 @@
       const saved = (await chrome.storage.local.get(collapseKey))[collapseKey];
       state.collapsed = new Set([...(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []), "dtw-automation"]);
       await chrome.storage.local.set({ accountId });
+      await refresh();
       window.dispatchEvent(new CustomEvent("dtw:session-list-request"));
-      await send("request-ready", { observedAtMs });
-      await refresh(); await syncVisibleSessions(); await syncSessionTimes();
+      send("request-ready", { observedAtMs }).then(() => {
+        if (state.accountId === accountId) return refresh();
+      }).catch((error) => { if (state.accountId === accountId) showToast(`后台任务恢复失败：${error.message}`); });
+      await syncVisibleSessions(); await syncSessionTimes();
       for (const detail of state.observedHistories.values()) if (detail.accountId === accountId) await observeNativeHistory(detail);
       state.observedHistories.clear();
       if (!state.networkIssue) root.querySelector(".dtw-request-notice")?.remove();
       syncRoute();
+    } catch (error) {
+      if (!state.snapshot) { state.startupFailed = true; restoreNativeSessions(); }
+      showToast(`插件初始化失败：${error.message}`, 10000);
     } finally { state.initializing = false; }
   }
   window.addEventListener("dtw:account-ready", (event) => {
@@ -1631,12 +1655,9 @@
     window.navigation?.addEventListener("currententrychange", scheduleUiSync);
     showLoadingTree();
     state.knownAtStart = new Set([...nativeLinks().map((item) => idFromHref(item.href)), currentId()].filter(Boolean));
-    const account = await getAccount();
-    if (account?.accountId) await initializeAccount(account.accountId, account.observedAtMs);
-    else { state.startupFailed = true; restoreNativeSessions(); showToast("等待原生页面的登录信息，插件不会主动验证登录", 10000); }
     setInterval(async () => {
       currentRequestIssue();
-      if (!chrome.runtime?.id || !state.accountId || state.syncingUi) return;
+      if (!chrome.runtime?.id || !state.accountId || !state.snapshot || state.startupFailed || state.syncingUi) return;
       state.syncingUi = true;
       try { if (!state.automationRunning && !state.rolloverRunning) await syncVisibleSessions();
         await titleSync(); await checkTurn(); await syncSessionTimes(); renderTree(); renderMemoryButton();
@@ -1645,6 +1666,9 @@
       } catch { /* Leave native chat usable during transient DSW changes. */ }
       finally { state.syncingUi = false; }
     }, 1500);
+    const account = await getAccount();
+    if (account?.accountId) await initializeAccount(account.accountId, account.observedAtMs);
+    else { state.startupFailed = true; restoreNativeSessions(); showToast("等待原生页面的登录信息，插件不会主动验证登录", 10000); }
   }
   start().catch((error) => console.warn("[DeepSeek Pilot]", error));
 })();
