@@ -97,14 +97,17 @@ try {
         row.projectId=message.projectId;
       }
       if(message.type==='dtw:session-delete')data.sessions.forEach(row=>{if(message.sessionIds.includes(row.sessionId))row.deleted=true});
-      if(message.type==='dtw:session-observe')Object.assign(data.sessions.find(row=>row.sessionId===message.sessionId),message);
+      if(message.type==='dtw:session-observe'){
+        let row=data.sessions.find(row=>row.sessionId===message.sessionId);
+        if(!row){row={sessionId:message.sessionId,purpose:'USER'};data.sessions.push(row);}Object.assign(row,message);
+      }
       if(message.type==='dtw:project-update')Object.assign(data.projects.find(row=>row.projectId===message.projectId),message);
       return {ok:true};
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
-      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal};
+      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -114,6 +117,8 @@ try {
       {projectId:'archived',name:'已归档项目',archived:true},{projectId:'dtw-automation',name:'自动化会话',systemKind:'AUTOMATION'}],
       sessions:${JSON.stringify([...titles, "旅行计划", "读书笔记"].map((title, i) => ({ sessionId: `s${i + 1}`, title, purpose: "USER", updatedAtMs: 20 - i })))}.concat([{sessionId:'helper',title:'记忆整理',purpose:'AUTOMATION',updatedAtMs:1},{sessionId:'archived-session',title:'归档会话',purpose:'USER'}]),
       memberships:${JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ sessionId: `s${i + 1}`, projectId: i < 6 ? "p1" : null })))}.concat([{sessionId:'archived-session',projectId:'archived'}]),settings:{},jobs:[]};
+    fixture.publishList=(rows=fixture.state.snapshot.sessions.filter(row=>!row.deleted),hasMore=false)=>window.dispatchEvent(new CustomEvent('dtw:session-list',
+      {detail:JSON.stringify({accountId:fixture.state.accountId,hasMore,sessions:rows.map(({sessionId,title,updatedAtMs,pinned})=>({sessionId,title,updatedAtMs,pinned}))})}));
     document.querySelector('.new-chat').addEventListener('click',()=>{fixtureNewChats++;history.pushState(null,'','/a/chat');});
     document.querySelectorAll('.native-row').forEach(row=>{
       row.addEventListener('click',event=>event.preventDefault());
@@ -140,7 +145,7 @@ try {
       });
     });
     window.addEventListener('dtw:delete-request',event=>window.dispatchEvent(new CustomEvent('dtw:delete-result',{detail:JSON.stringify({requestId:JSON.parse(event.detail).requestId})})));
-    fixture.renderTree();`);
+    fixture.publishList();fixture.renderTree();`);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 9);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session.active').length"), 1);
   assert.equal(await evaluate("document.querySelector('[data-group=dtw-automation] .dtw-group-body').inert"), true, "自动化会话默认收起");
@@ -287,18 +292,46 @@ try {
   assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
   await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
-  await evaluate(`fixture.state.snapshot.sessions.push(...Array.from({length:14},(_,i)=>({sessionId:'p0-helper-'+i,purpose:'MEMORY',automationOrigin:'PLUGIN',updatedAtMs:i})));fixture.renderTree()`);
+  await evaluate(`fixture.state.snapshot.sessions.push(...Array.from({length:14},(_,i)=>({sessionId:'p0-helper-'+i,purpose:'MEMORY',automationOrigin:'PLUGIN',updatedAtMs:i})));fixture.publishList()`);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-session^=p0-helper-]')].map(node=>node.dataset.session)"),
     ['p0-helper-13','p0-helper-12','p0-helper-11','p0-helper-10','p0-helper-9'], "仅展示最近五条");
   assert.equal(await evaluate("fixture.state.snapshot.sessions.filter(row=>row.sessionId.startsWith('p0-helper-')).length"), 14, "显示数量不删除会话数据");
   await evaluate(`fixture.state.snapshot.sessions.push({sessionId:'p0-manual',purpose:'AUTOMATION',automationOrigin:'MANUAL',updatedAtMs:100},
-    {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:99});fixture.renderTree()`);
+    {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:99});fixture.publishList()`);
   assert.equal(await evaluate("document.querySelectorAll('[data-group=dtw-automation] .dtw-session').length"), 5);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-session=p0-manual]'))&&Boolean(document.querySelector('[data-session=p0-unknown]'))"), true);
   await click("collapse", "dtw-automation");
   assert.equal(await evaluate("document.querySelector('[data-group=dtw-automation] .dtw-group-body').inert"), false);
   await click("session-menu", "p0-manual");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-action=automation-unmark]'))"), true);
+  await evaluate(`document.body.click();fixture.state.snapshot.sessions=fixture.state.snapshot.sessions.filter(row=>row.sessionId!=='s3');
+    fixture.state.snapshot.sessions.push({sessionId:'offline-deleted',purpose:'USER',title:'本地旧会话'});
+    fixture.state.snapshot.memberships.push({sessionId:'offline-deleted',projectId:'p1'});
+    fixture.publishList([{sessionId:'s3',title:'官方最新标题',updatedAtMs:100},{sessionId:'fresh-official',title:'新会话',updatedAtMs:101}],true)`);
+  await waitFor("未知 ID 显示未归类", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=fresh-official]'))"));
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=offline-deleted]'))"), false, "关闭插件期间删除的旧会话不会由缓存补回");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=p1] [data-session=s3]'))"), true, "官方 ID 按本地项目归属分类");
+  assert.match(await evaluate("document.querySelector('[data-session=s3]').textContent"), /官方最新标题/);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-action=load-sessions]'))"), true);
+  assert.equal(await evaluate("fixture.state.snapshot.memberships.find(row=>row.sessionId==='s6').projectId"), 'p1', "未加载的分页保留项目归属");
+  await evaluate(`fixture.publishList([{sessionId:'s3',title:'官方最新标题',updatedAtMs:100},{sessionId:'fresh-official',title:'新会话',updatedAtMs:101},
+    {sessionId:'s6',title:'分页会话',updatedAtMs:1}]);fixture.renderTree()`);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=p1] [data-session=s6]'))"), true, "分页加载后恢复到原项目");
+  await evaluate("fixture.publishList([{sessionId:'fresh-official',title:'新会话',updatedAtMs:101}]);fixture.renderTree();fixture.renderTree()");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=s3]'))"), false);
+  assert.equal(await evaluate("fixture.state.snapshot.memberships.find(row=>row.sessionId==='s3').projectId"), 'p1', "列表缺席不删除归属记录");
+  await evaluate(`window.dispatchEvent(new CustomEvent('dtw:session-list',{detail:JSON.stringify({accountId:'other-account',sessions:[{sessionId:'wrong-account'}]})}))`);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=wrong-account]'))"), false);
+  await evaluate(`const staleLink=document.createElement('a');staleLink.className='native-row';staleLink.href='/a/chat/s/offline-deleted';staleLink.textContent='迟到的旧节点';
+    document.querySelector('#native-history').append(staleLink);fixture.syncVisibleSessions()`);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=offline-deleted]'))"), false, "旧的原生节点重挂载也不能补回官方列表外的会话");
+  await evaluate(`const link=document.createElement('a');link.className='native-row';link.href='/a/chat/s/native-fresh';link.textContent='原生新建会话';
+    fixture.state.newSessionIds.add('native-fresh');document.querySelector('#native-history').append(link);fixture.syncVisibleSessions()`);
+  await waitFor("原生页面新建会话", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=native-fresh]'))"));
+  await evaluate("fixture.publishList([])");
+  assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 0, "官方空列表不显示本地旧会话");
+  await evaluate("document.querySelector('#native-history').replaceChildren();fixture.renderTree()");
+  assert.equal(await evaluate("Boolean(document.querySelector('.dtw-tree [data-action=create-project]'))"), true, "没有官方会话时仍可管理项目");
   console.log(JSON.stringify({ ok: true, checks: "plugin menus open on one click, refreshed anchors, original callbacks without visible dropdowns, pin state, hints, archives and viewport" }));
 } finally {
   if (browser) await browser.call("Browser.close").catch(() => {});

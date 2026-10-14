@@ -470,7 +470,7 @@ async function observeSession(accountId, message, sender = {}) {
   session.seenAtMs = NOW();
   session.deleted = false;
   await DB.put("sessions", session);
-  if (!previous) {
+  if (!previous && !await DB.get("memberships", key(accountId, sessionId))) {
     const cfg = await settings(accountId);
     await DB.put("memberships", { accountId, sessionId, projectId: null, source: "NONE", manualLock: false,
       memoryModeEnabled: message.loadedHistory ? false : cfg.memoryModeDefault, updatedAtMs: NOW(), version: 1 });

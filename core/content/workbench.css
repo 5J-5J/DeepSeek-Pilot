@@ -54,6 +54,7 @@ button.dtw-help-trigger:hover { color: var(--dtw-accent); border-color: var(--dt
 .dtw-unassigned .dtw-group-name { color: var(--dtw-muted); font-size: 13px; font-weight: 400 !important; gap: 5px; }
 .dtw-unassigned .dtw-group-head:hover { background: transparent; }
 .dtw-unassigned .dtw-session > button:first-child { padding-left: 10px; }
+.dtw-load-more { width: 100%; min-height: 36px; margin-top: 8px; color: var(--dtw-muted) !important; }
 .dtw-owned button:focus-visible { outline: 2px solid var(--dtw-accent); outline-offset: -2px; }
 .dtw-native-action :is(.ds-dropdown-menu,[role="menu"]):not(.dtw-owned),.dtw-native-action-menu { visibility: hidden !important; pointer-events: none !important; }
 .dtw-menu { position: fixed; left: var(--dtw-menu-left); top: var(--dtw-menu-top); max-height: calc(100vh - 16px); overflow-y: auto; z-index: 2147483001; }

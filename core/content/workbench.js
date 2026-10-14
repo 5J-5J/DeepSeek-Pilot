@@ -8,6 +8,7 @@
   const NEW_CHAT = "__dtw_new_chat__";
   const state = { accountId: "", snapshot: null, knownAtStart: new Set(), newSessionIds: new Set(), pendingNewConversationAt: 0, pendingNewKnownIds: new Set(),
     importedIds: new Set(), syncingVisible: false, syncingTimes: false, sessionTimes: new Map(), reportedTips: new Map(), titles: new Map(),
+    officialSessions: null, listedSessionIds: new Set(), removedSessionIds: new Set(), hasMoreSessions: false, loadingSessions: false,
     collapsed: new Set(["dtw-automation"]), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "", newChatMemoryOff: false,
     menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
@@ -95,6 +96,7 @@
       return DTWHistory.parseHistoryResponse(await pending, sessionId, options);
     } catch (error) {
       if (error.code === "SESSION_NOT_FOUND") {
+        removeSidebarSessions([sessionId]);
         await send("session-delete", { sessionIds: [sessionId] });
         await refresh();
       }
@@ -131,6 +133,7 @@
   }
   function listContainer() {
     const row = nativeLinks().find((link) => link.closest(".ds-scroll-area"));
+    if (!row) return findSidebar()?.querySelector(".ds-scroll-area") || null;
     const scroller = row?.closest(".ds-scroll-area");
     if (!scroller) return null;
     let node = row;
@@ -181,6 +184,20 @@
   }
   function automationSession(sessionId) { return state.snapshot?.sessions.some((item) => item.sessionId === sessionId
     && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose)); }
+  function nativeSessionRows() {
+    return new Map(nativeLinks().map((link) => [idFromHref(link.href), { sessionId: idFromHref(link.href),
+      title: link.textContent.trim().replace(/\s+/g, " ").slice(0, 160) }]).filter(([id]) => /^[\w-]{1,100}$/.test(id)));
+  }
+  function sidebarSessions() {
+    const cached = new Map((state.snapshot?.sessions || []).map((row) => [row.sessionId, row]));
+    return [...(state.officialSessions || nativeSessionRows()).values()].filter((row) => !state.removedSessionIds.has(row.sessionId))
+      .map((row) => ({ ...cached.get(row.sessionId), ...row, purpose: cached.get(row.sessionId)?.purpose || "USER",
+        lastMessageAtMs: row.updatedAtMs ?? null, deleted: false }));
+  }
+  function removeSidebarSessions(ids) {
+    for (const id of ids) { state.removedSessionIds.add(id); state.officialSessions?.delete(id); }
+    renderTree();
+  }
   function sessionRows(items) {
     return items.map((session) => `<div class="dtw-session ${currentId() === session.sessionId ? "active" : ""}" data-session="${esc(session.sessionId)}">
       <button data-action="${state.selectedSessions ? "select-session" : "open-session"}" data-id="${esc(session.sessionId)}" ${state.selectedSessions ? `role="checkbox" aria-checked="${state.selectedSessions.has(session.sessionId)}"` : ""} title="${esc(session.title || "新会话")}">${state.selectedSessions ? `<span aria-hidden="true">${state.selectedSessions.has(session.sessionId) ? "☑" : "☐"}</span> ` : ""}${esc(session.title || "新会话")}</button>${session.pinned ? icon("pin", "dtw-pinned") : ""}
@@ -194,7 +211,7 @@
     let tree = list.querySelector(":scope > .dtw-tree");
     if (!tree) { tree = document.createElement("section"); tree.className = "dtw-tree dtw-owned"; list.prepend(tree); }
     const nativeOrder = new Map(nativeLinks().map((link, index) => [idFromHref(link.href), index]));
-    const all = state.snapshot.sessions.filter((item) => !item.deleted);
+    const all = sidebarSessions();
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
     const helpers = all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose));
     const jobs = DTWHistory.sortSessionsNewestFirst(helpers).slice(0, 5);
@@ -207,7 +224,7 @@
     const unassigned = { id: "unassigned", title: "未归类会话", items: user.filter((item) => !membership(item.sessionId)?.projectId) };
     const suggestions = state.snapshot.jobs.filter((job) => job.type === "CLASSIFY" && job.status === "NEEDS_REVIEW" && job.result?.choice === "NEW");
     const alertCount = state.snapshot.alerts?.count || 0;
-    const contentKey = JSON.stringify([currentId(), alertCount, state.selectedSessions && [...state.selectedSessions], [...groups, unassigned].map((group) => ({ ...group,
+    const contentKey = JSON.stringify([currentId(), alertCount, state.hasMoreSessions, state.loadingSessions, state.selectedSessions && [...state.selectedSessions], [...groups, unassigned].map((group) => ({ ...group,
       items: group.items.map(({ sessionId, title, purpose, pinned }) => ({ sessionId, title, purpose, pinned })) })), suggestions]);
     if (tree.dtwContentKey === contentKey) { hideNativeSessions(list); return; }
     tree.dtwContentKey = contentKey;
@@ -227,7 +244,8 @@
     tree.innerHTML = `<div class="dtw-tools"><button class="dtw-section-title" data-action="collapse" data-id="__projects__" aria-expanded="${!state.collapsed.has("__projects__")}">项目${icon("chevron", "dtw-section-caret")}</button><button class="dtw-row-action" data-action="create-project" title="新建项目" aria-label="新建项目">${icon("plus")}</button><button class="dtw-row-action ${alertCount ? "has-alert" : ""}" data-action="open-options" title="${alertCount ? `${alertCount} 项问题需要处理` : "设置"}" aria-label="${alertCount ? `设置，${alertCount} 项问题需要处理` : "设置"}">${icon("settings")}${alertCount ? `<span class="dtw-alert-dot" aria-hidden="true"></span>` : ""}</button></div>
       ${state.selectedSessions ? `<div class="dtw-selection-tools"><span>已选 ${state.selectedSessions.size} 项</span><button data-action="delete-selected" ${state.selectedSessions.size ? "" : "disabled"}>删除</button><button data-action="cancel-selection">取消</button></div>` : ""}<div class="dtw-projects dtw-group-body ${state.collapsed.has("__projects__") ? "is-collapsed" : ""}" ${state.collapsed.has("__projects__") ? 'inert aria-hidden="true"' : 'aria-hidden="false"'}><div class="dtw-group-items">
       ${suggestions.map((job) => `<div class="dtw-suggestion">建议新建「${esc(job.result.suggestedName)}」<div><button data-action="accept-suggestion" data-id="${esc(job.jobId)}">创建并移入</button><button data-action="reject-suggestion" data-id="${esc(job.jobId)}">忽略</button></div></div>`).join("")}
-      ${groups.map(groupHtml).join("")}</div></div>${groupHtml(unassigned)}`;
+      ${groups.map(groupHtml).join("")}</div></div>${groupHtml(unassigned)}${state.hasMoreSessions
+        ? `<button class="dtw-load-more" data-action="load-sessions" ${state.loadingSessions ? "disabled" : ""}>${state.loadingSessions ? "正在加载…" : "加载更多会话"}</button>` : ""}`;
     const helpSlot = tree.querySelector(".dtw-automation-help");
     if (helpSlot) {
       if (!automationHelpButton) {
@@ -681,7 +699,7 @@
     if (!state.automationRunning && !state.rolloverRunning && !state.pendingSend && !isGenerating()
       && !state.networkIssue && !state.snapshot.settings.automationPaused
       && !state.snapshot.jobs.some((job) => ["QUEUED", "PENDING", "RUNNING"].includes(job.status) && ["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"].includes(job.type))) {
-      const helpers = state.snapshot.sessions.filter((session) => !session.deleted && session.automationOrigin === "PLUGIN"
+      const helpers = sidebarSessions().filter((session) => session.automationOrigin === "PLUGIN"
         && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(session.purpose));
       const signature = helpers.map((session) => session.sessionId).sort().join(",");
       if (helpers.length > 10 && signature !== state.cleanupSignature) {
@@ -711,23 +729,33 @@
     } finally { state.syncingTimes = false; }
   }
   async function syncVisibleSessions() {
-    if (!state.accountId || state.syncingVisible) return;
+    if (!state.accountId || state.syncingVisible || state.automationRunning || state.rolloverRunning) return;
+    const accountId = state.accountId;
     state.syncingVisible = true;
     let added = false;
     try {
-      for (const link of nativeLinks()) {
-        const sessionId = idFromHref(link.href);
+      const native = nativeSessionRows();
+      if (state.officialSessions) for (const [id, row] of native)
+        if (!state.removedSessionIds.has(id) && !state.listedSessionIds.has(id) && !state.officialSessions.has(id)
+          && (state.newSessionIds.has(id) || state.snapshot?.jobs.some((job) => job.status === "RUNNING"
+            && (job.automationSessionId === id || job.targetSessionId === id)))) { state.officialSessions.set(id, row); state.listedSessionIds.add(id); }
+      state.listedSessionIds = new Set(native.keys());
+      for (const row of sidebarSessions()) {
+        if (state.accountId !== accountId) return;
+        const sessionId = row.sessionId;
         if (!sessionId || state.importedIds.has(sessionId)) continue;
-        const title = link.textContent.trim().replace(/\s+/g, " ");
-        await send("session-observe", { sessionId, title, loadedHistory: true,
+        const title = row.title;
+        await send("session-observe", { ...row, sessionId, title, loadedHistory: true,
           ...state.sessionTimes.get(sessionId) });
+        if (state.accountId !== accountId) return;
         state.importedIds.add(sessionId);
-        if (title) state.titles.set(sessionId, title);
+        if (native.has(sessionId)) state.titles.set(sessionId, native.get(sessionId).title);
         added = true;
       }
       if (added) {
         await refresh();
       }
+      renderTree();
     } finally {
       state.syncingVisible = false;
     }
@@ -738,6 +766,7 @@
     for (const link of nativeLinks()) {
       const id = idFromHref(link.href); const title = link.textContent.trim().replace(/\s+/g, " ");
       if (!id || !known.has(id) || !title || state.titles.get(id) === title) continue;
+      if (state.titles.has(id) && state.officialSessions?.has(id)) state.officialSessions.get(id).title = title;
       state.titles.set(id, title);
       await send("session-observe", { sessionId: id, title, newSession: false }).catch(() => {});
     }
@@ -806,7 +835,7 @@
       await saveObservedHistory(detail.sessionId, captured);
       await refresh();
     } catch (error) {
-      if (error.code === "SESSION_NOT_FOUND") { await send("session-delete", { sessionIds: [detail.sessionId] }); await refresh(); }
+      if (error.code === "SESSION_NOT_FOUND") { removeSidebarSessions([detail.sessionId]); await send("session-delete", { sessionIds: [detail.sessionId] }); await refresh(); }
       else showToast(error.message, 5000);
     }
   }
@@ -1149,7 +1178,7 @@
       state.pickerSessionId = id;
       html = `<div class="dtw-menu-label">移到项目</div>${projects().map((project) => menuItem("move-to", project.projectId, project.name, "folder", membership(id)?.projectId === project.projectId ? 'aria-current="true"' : "")).join("") || '<div class="dtw-menu-label">暂无项目</div>'}<div role="separator" class="dtw-menu-divider"></div>${menuItem("create-and-move", "", "新建项目", "plus")}${membership(id)?.projectId ? menuItem("move-to", "", "从项目中移除", "remove") : ""}`;
     } else {
-      const selected = state.snapshot.sessions.find((item) => item.sessionId === id);
+      const selected = sidebarSessions().find((item) => item.sessionId === id);
       const native = nativeLinks().some((item) => idFromHref(item.href) === id);
       html = `${menuItem("open-session", id, "打开会话", "compose")}${native ?
         `${menuItem("session-rename", id, "重命名", "edit")}${menuItem("session-pin", id, selected?.pinned ? "取消置顶" : "置顶", "pin")}${menuItem("session-share", id, "分享", "share")}${menuItem("session-select", id, "多选", "select")}` : ""}<div role="separator" class="dtw-menu-divider"></div>${sessionMenuExtras(id)}${native ? `<div role="separator" class="dtw-menu-divider"></div>${menuItem("session-delete", id, "删除会话", "trash")}` : ""}`;
@@ -1158,7 +1187,7 @@
     box.querySelector("button")?.focus({ preventScroll: true });
   }
   function sessionMenuExtras(id) {
-    const selected = state.snapshot.sessions.find((item) => item.sessionId === id);
+    const selected = sidebarSessions().find((item) => item.sessionId === id);
     const row = membership(id);
     if (selected?.purpose === "AUTOMATION") return menuItem("automation-unmark", id, "恢复为普通会话", "back");
     return `${menuItem("open-picker", id, "移到项目", "move")}${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : ""}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
@@ -1202,6 +1231,7 @@
           }
           if (action === "pin") {
             const clock = state.sessionTimes.get(id); if (clock) clock.pinned = pinned;
+            if (state.officialSessions?.has(id)) state.officialSessions.get(id).pinned = pinned;
             await send("session-observe", { sessionId: id, pinned }); await refresh();
           }
           break;
@@ -1245,6 +1275,23 @@
   async function handleAction(button) {
     const action = button.dataset.action; const id = button.dataset.id || "";
     try {
+      if (action === "load-sessions") {
+        if (state.loadingSessions) return;
+        state.loadingSessions = true; renderTree();
+        try {
+          requireSendAllowed();
+          let slot = await send("history-request-slot", { userAction: true });
+          while (slot.waitMs > 0 && !slot.blocked && !slot.rateLimited) { await delay(slot.waitMs); slot = await send("history-request-slot", { userAction: true }); }
+          if (slot.blocked || slot.rateLimited) throw new Error(slot.message || "插件请求已暂停");
+          const requestId = crypto.randomUUID();
+          const result = waitEvent("dtw:session-list-result", requestId, 18000);
+          window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ paused: Boolean(state.snapshot?.settings.automationPaused),
+            issue: state.networkIssue, allowCurrentTask: true }) }));
+          window.dispatchEvent(new CustomEvent("dtw:session-list-more", { detail: JSON.stringify({ requestId, accountId: state.accountId }) }));
+          await result;
+        } finally { state.loadingSessions = false; renderTree(); }
+        return;
+      }
       if (action === "collapse") toggleGroup(id);
       if (action === "open-session") {
         closeMenu();
@@ -1263,7 +1310,7 @@
       }
       if (action === "session-rename") {
         closeMenu();
-        const title = prompt("会话名称", state.snapshot.sessions.find((item) => item.sessionId === id)?.title)?.trim();
+        const title = prompt("会话名称", sidebarSessions().find((item) => item.sessionId === id)?.title)?.trim();
         if (title) await nativeSessionAction(id, "rename", title);
       }
       if (["session-pin", "session-share", "session-delete"].includes(action))
@@ -1280,7 +1327,7 @@
         const requestId = crypto.randomUUID(); const pending = waitEvent("dtw:delete-result", requestId);
         window.dispatchEvent(new CustomEvent("dtw:request-state", { detail: JSON.stringify({ paused: Boolean(state.snapshot?.settings.automationPaused), issue: state.networkIssue, allowCurrentTask: true }) }));
         window.dispatchEvent(new CustomEvent("dtw:delete-request", { detail: JSON.stringify({ requestId, accountId: state.accountId, sessionIds: ids }) }));
-        await pending; await send("session-delete", { sessionIds: ids });
+        await pending; removeSidebarSessions(ids); await send("session-delete", { sessionIds: ids });
         state.selectedSessions = null; await refresh();
         if (ids.includes(currentId())) [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "开启新对话")?.click();
       }
@@ -1485,11 +1532,26 @@
   });
   window.addEventListener("dtw:sessions-deleted", (event) => {
     const detail = parse(event);
-    if (!state.accountId || !Array.isArray(detail?.sessionIds)) return;
+    if (!state.accountId || !Array.isArray(detail?.sessionIds) || detail.accountId && detail.accountId !== state.accountId) return;
+    removeSidebarSessions(detail.sessionIds);
     send("session-delete", { sessionIds: detail.sessionIds }).then(refresh).catch(() => {});
+  });
+  window.addEventListener("dtw:session-list", (event) => {
+    const detail = parse(event);
+    if (!state.accountId || detail?.accountId !== state.accountId || !Array.isArray(detail.sessions)) return;
+    const native = nativeSessionRows();
+    state.listedSessionIds = new Set(native.keys());
+    for (const [id, row] of native) state.titles.set(id, row.title);
+    state.officialSessions = new Map(detail.sessions.filter((row) => typeof row?.sessionId === "string" && /^[\w-]{1,100}$/.test(row.sessionId))
+      .map((row) => [row.sessionId, row]));
+    for (const id of state.officialSessions.keys()) state.listedSessionIds.add(id);
+    state.hasMoreSessions = Boolean(detail.hasMore);
+    renderTree();
+    syncVisibleSessions().then(syncSessionTimes).catch((error) => showToast(`会话归属同步失败：${error.message}`));
   });
   window.addEventListener("dtw:session-times", (event) => {
     const detail = parse(event);
+    if (detail?.accountId && detail.accountId !== state.accountId) return;
     for (const item of (Array.isArray(detail?.sessions) ? detail.sessions : [])) {
       if (typeof item?.sessionId !== "string" || !Number.isFinite(item.updatedAtMs)) continue;
       const previous = state.sessionTimes.get(item.sessionId);
@@ -1513,6 +1575,8 @@
     try {
       if (state.accountId && state.accountId !== accountId) {
         state.snapshot = null; state.sessionTimes.clear(); state.dirtySessions.clear(); state.importedIds.clear(); restoreNativeSessions();
+        state.newSessionIds.clear(); state.pendingNewConversationAt = 0;
+        state.officialSessions = new Map(); state.listedSessionIds.clear(); state.removedSessionIds.clear(); state.titles.clear(); state.hasMoreSessions = false;
       }
       state.accountId = accountId; state.startupFailed = false;
       currentRequestIssue();
@@ -1521,6 +1585,7 @@
       const saved = (await chrome.storage.local.get(collapseKey))[collapseKey];
       state.collapsed = new Set([...(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []), "dtw-automation"]);
       await chrome.storage.local.set({ accountId });
+      window.dispatchEvent(new CustomEvent("dtw:session-list-request"));
       await send("request-ready", { observedAtMs });
       await refresh(); await syncVisibleSessions(); await syncSessionTimes();
       for (const detail of state.observedHistories.values()) if (detail.accountId === accountId) await observeNativeHistory(detail);

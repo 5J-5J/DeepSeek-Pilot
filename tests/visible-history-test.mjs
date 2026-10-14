@@ -482,4 +482,10 @@ await automaticPrune();
 assert.equal(batches.length, failedAttempts, "自动清理失败不循环重试");
 const cleanupIssue = (await db.all("jobs", retentionAccount)).find(job => job.type === "CLEANUP");
 assert.equal(cleanupIssue.status, "NEEDS_REVIEW", "清理未完成也保留提醒记录");
+const savedAssignment = { accountId, sessionId: "mapping-only", projectId: "assignment-project", manualLock: true,
+  source: "MANUAL", memoryModeEnabled: true, version: 7 };
+await db.put("memberships", savedAssignment);
+await extensionRequest("session-observe", { sessionId: "mapping-only", loadedHistory: true, title: "官方返回的会话" });
+assert.deepEqual(await db.get("memberships", [accountId, "mapping-only"]), savedAssignment,
+  "仅有 ID 与项目归属、没有会话缓存时，官方列表同步不能覆盖已有归属");
 console.log(JSON.stringify({ ok: true }));

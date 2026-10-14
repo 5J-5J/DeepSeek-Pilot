@@ -25,6 +25,12 @@
   let requestState = {};
   const profileWaiters = new Set();
   const observedHistories = new Map();
+  const pendingLists = new Map();
+  const listPages = new Map();
+  const listHeads = new Map();
+  const deletedSessionIds = new Set();
+  let listSequence = 0;
+  let listLoading = false;
   window.addEventListener("dtw:request-state", (event) => { requestState = parseDetail(event) || {}; });
   window.addEventListener("dtw:edit-context", (event) => {
     const detail = parseDetail(event);
@@ -70,14 +76,58 @@
     return "";
   }
 
-  function reportSessionTimes(data) {
+  function emitSessionList() {
+    if (!accountId || !listPages.size) return;
+    const sessions = new Map();
+    for (const page of [...listPages.values()].sort((a, b) => a.sequence - b.sequence))
+      for (const row of page.sessions) if (!deletedSessionIds.has(row.sessionId)) sessions.set(row.sessionId, row);
+    emit("dtw:session-list", { accountId, sessions: [...sessions.values()], hasMore: Boolean(nextListUrl()) });
+  }
+  function nextListUrl() {
+    for (const sector of listHeads.keys()) {
+      const latest = [...listPages.values()].filter((page) => page.sector === sector).sort((a, b) => b.sequence - a.sequence)[0];
+      if (latest?.nextUrl) return latest.nextUrl;
+    }
+    return "";
+  }
+  function applySessionPage(page) {
+    if (!accountId || page.authorization && nativeAuthorization && page.authorization !== nativeAuthorization) {
+      pendingLists.set(page.sequence, page);
+      if (pendingLists.size > 100) pendingLists.delete(pendingLists.keys().next().value);
+      return;
+    }
+    if (page.sequence < (listHeads.get(page.sector) || 0)) return;
+    if (page.first) {
+      for (const [key, previous] of listPages) if (previous.sector === page.sector) listPages.delete(key);
+      listHeads.set(page.sector, page.sequence);
+    }
+    if ((listPages.get(page.url)?.sequence || 0) > page.sequence) return;
+    listPages.set(page.url, page);
+    emit("dtw:session-times", { accountId, sessions: page.sessions });
+    emitSessionList();
+  }
+  function reportSessionList(url, status, data, authorization, sequence) {
     const rows = data?.data?.biz_data?.chat_sessions;
-    if (!Array.isArray(rows)) return;
-    const sessions = rows.filter((row) => typeof row?.id === "string" && Number.isFinite(row.updated_at))
-      .map((row) => ({ sessionId: row.id, updatedAtMs: Math.round(row.updated_at * 1000),
-        currentMessageId: Number.isInteger(row.current_message_id) ? row.current_message_id : null,
+    if (status < 200 || status >= 300 || data?.code !== 0 || data?.data?.biz_code && data.data.biz_code !== 0
+      || !Array.isArray(rows) || rows.some((row) => typeof row?.id !== "string" || !/^[\w-]{1,100}$/.test(row.id))) return false;
+    const sessions = rows.map((row) => ({ sessionId: row.id, title: typeof row.title === "string" ? row.title.slice(0, 160) : "",
+        ...(Number.isFinite(row.updated_at) ? { updatedAtMs: Math.round(row.updated_at * 1000) } : {}),
+        ...(Number.isFinite(row.inserted_at) ? { createdAtMs: Math.round(row.inserted_at * 1000) } : {}),
+        ...(Number.isInteger(row.current_message_id) ? { currentMessageId: row.current_message_id } : {}),
         ...([0, 1, false, true].includes(row.pinned) ? { pinned: Boolean(row.pinned) } : {}) }));
-    if (sessions.length) emit("dtw:session-times", { sessions });
+    const target = new URL(url, "https://chat.deepseek.com"); target.searchParams.sort();
+    const first = ![...target.searchParams].some(([key, value]) => /cursor/i.test(key) && !key.endsWith(".pinned") && value && value !== "null");
+    const sector = target.searchParams.get("lte_cursor.pinned") || "all";
+    let nextUrl = "";
+    const last = rows.at(-1);
+    if (data.data.biz_data.has_more === true && Number.isFinite(last?.updated_at)) {
+      const next = new URL(target);
+      next.searchParams.set("lte_cursor.updated_at", String(last.updated_at));
+      nextUrl = next.href;
+      if (nextUrl === target.href) nextUrl = "";
+    }
+    applySessionPage({ url: target.href, sector, first, sessions, nextUrl, authorization, sequence });
+    return true;
   }
 
   function reportDeletedSessions(data, body) {
@@ -86,7 +136,11 @@
       const request = JSON.parse(typeof body === "string" ? body : "{}");
       const sessionIds = Array.isArray(request.chat_session_ids)
         ? request.chat_session_ids.filter((id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id)) : [];
-      if (sessionIds.length) emit("dtw:sessions-deleted", { sessionIds });
+      if (sessionIds.length) {
+        sessionIds.forEach((id) => deletedSessionIds.add(id));
+        emit("dtw:sessions-deleted", { accountId, sessionIds });
+        emitSessionList();
+      }
     } catch { /* An unrecognized body must not change the local session list. */ }
   }
 
@@ -104,7 +158,9 @@
     if (!issue) return;
     if (issue.code === "RATE_LIMITED" && requestState.issue && requestState.issue.code !== "RATE_LIMITED") return;
     issue.observedAtMs ||= Date.now();
-    if (issue.code === "AUTH_REQUIRED") { accountId = ""; nativeAuthorization = ""; observedHistories.clear(); }
+    if (issue.code === "AUTH_REQUIRED") {
+      accountId = ""; nativeAuthorization = ""; observedHistories.clear(); pendingLists.clear(); listPages.clear(); listHeads.clear(); deletedSessionIds.clear();
+    }
     requestState.issue = issue;
     emit("dtw:request-issue", issue);
     for (const requestId of profileWaiters) emit("dtw:profile-result", { requestId, accountId: "", ...issue });
@@ -119,7 +175,7 @@
     if (!accountId || detail?.accountId && detail.accountId !== accountId)
       throw Object.assign(new Error("尚未收到原生页面的有效账号信息，插件不会调用登录接口验证"), { code: "AUTH_REQUIRED" });
   }
-  function observeResponse(url, status, data, authorization = "") {
+  function observeResponse(url, status, data, authorization = "", sequence = 0) {
     if (!isDeepSeekApi(url)) return;
     const issue = responseIssue(status, data);
     if (issue) { reportIssue(issue); return; }
@@ -127,7 +183,9 @@
       const user = data?.data?.biz_data?.user || data?.data?.biz_data;
       const id = String(user?.id || user?.user_id || "");
       if (status < 200 || status >= 300 || data?.code !== 0 || data?.data?.biz_code && data.data.biz_code !== 0 || !/^[\w-]{6,100}$/.test(id)) return;
-      if (accountId && accountId !== id) observedHistories.clear();
+      if (accountId && accountId !== id) {
+        observedHistories.clear(); listPages.clear(); listHeads.clear(); deletedSessionIds.clear();
+      }
       accountId = id; nativeAuthorization = authorization;
       accountObservedAtMs = Date.now();
       if (requestState.issue?.code === "AUTH_REQUIRED") requestState.issue = null;
@@ -137,6 +195,9 @@
       for (const [sessionId, history] of observedHistories) if (!nativeAuthorization || !history.authorization || history.authorization === nativeAuthorization)
         emit("dtw:history-observed", { accountId, sessionId, data: history.data });
       observedHistories.clear();
+      for (const page of [...pendingLists.values()].sort((a, b) => a.sequence - b.sequence))
+        if (!nativeAuthorization || !page.authorization || page.authorization === nativeAuthorization) applySessionPage(page);
+      pendingLists.clear();
     } else if (url.includes("/api/v0/chat/history_messages")) {
       const sessionId = new URL(url, "https://chat.deepseek.com").searchParams.get("chat_session_id");
       if (!sessionId) return;
@@ -147,7 +208,7 @@
         observedHistories.set(sessionId, { data, authorization });
         if (observedHistories.size > 20) observedHistories.delete(observedHistories.keys().next().value);
       }
-    } else if (url.includes("/api/v0/chat_session/fetch_page")) reportSessionTimes(data);
+    } else if (url.includes("/api/v0/chat_session/fetch_page")) reportSessionList(url, status, data, authorization, sequence);
   }
   async function observeStreamError(response) {
     const reader = response.clone().body?.getReader();
@@ -288,8 +349,33 @@
       if (issue) { reportIssue(issue); throw Object.assign(new Error(issue.message), { code: issue.code }); }
       if (!response.ok || result?.code !== 0 || result?.data?.biz_code !== 0)
         throw new Error(result?.data?.biz_msg || result?.msg || "DeepSeek 删除会话失败");
+      reportDeletedSessions(result, body);
       emit("dtw:delete-result", { requestId });
     } catch (error) { emit("dtw:network-error", { requestId, code: error.code, error: String(error.message || error) }); }
+  });
+  window.addEventListener("dtw:session-list-request", emitSessionList);
+  window.addEventListener("dtw:session-list-more", async (event) => {
+    const detail = parseDetail(event); const requestId = detail?.requestId;
+    if (!requestId) return;
+    if (listLoading) { emit("dtw:network-error", { requestId, error: "正在加载会话，请稍后重试" }); return; }
+    listLoading = true;
+    try {
+      requireRequest(detail);
+      const url = nextListUrl();
+      if (url) {
+        const sequence = ++listSequence;
+        const requestAccount = accountId; const authorization = nativeAuthorization;
+        const headers = authorization ? { Authorization: authorization } : {};
+        const response = await originalFetch.call(window, url, { method: "GET", headers, credentials: "include" });
+        const data = await response.json();
+        if (accountId !== requestAccount || nativeAuthorization !== authorization) throw new Error("账号已切换，请重新加载会话列表");
+        const issue = responseIssue(response.status, data);
+        if (issue) { reportIssue(issue); throw Object.assign(new Error(issue.message), { code: issue.code }); }
+        if (!reportSessionList(url, response.status, data, authorization, sequence)) throw new Error("DeepSeek 会话列表响应无效，请稍后重试");
+      }
+      emit("dtw:session-list-result", { requestId });
+    } catch (error) { emit("dtw:network-error", { requestId, code: error.code, error: String(error.message) }); }
+    finally { listLoading = false; }
   });
   window.addEventListener("dtw:profile-request", (event) => {
     const requestId = parseDetail(event)?.requestId;
@@ -323,13 +409,14 @@
   if (typeof originalFetch === "function") {
     window.fetch = async function dtwPatchedFetch(input, init) {
       const url = requestUrl(input);
+      const sequence = url.includes("/api/v0/chat_session/fetch_page") ? ++listSequence : 0;
       const observe = (response) => {
         if (!isDeepSeekApi(url) || typeof response?.clone !== "function") return response;
         const authorization = new Headers(init?.headers || (input instanceof Request ? input.headers : {})).get("Authorization") || "";
         if (response.headers?.get("content-type")?.includes("text/event-stream")) {
           const issue = responseIssue(response.status, null); if (issue) reportIssue(issue);
           else observeStreamError(response).catch(() => {});
-        } else response.clone().json().then((data) => observeResponse(url, response.status, data, authorization))
+        } else response.clone().json().then((data) => observeResponse(url, response.status, data, authorization, sequence))
           .catch(() => reportIssue(responseIssue(response.status, null)));
         return response;
       };
@@ -404,8 +491,9 @@
   };
   XMLHttpRequest.prototype.send = function dtwPatchedSend(body) {
     const url = this.__dtwRequestUrl || "";
+    const sequence = url.includes("/api/v0/chat_session/fetch_page") ? ++listSequence : 0;
     if (isDeepSeekApi(url)) this.addEventListener("load", () => {
-      try { observeResponse(url, this.status, this.responseType === "json" ? this.response : JSON.parse(this.responseText), this.__dtwAuthorization || ""); }
+      try { observeResponse(url, this.status, this.responseType === "json" ? this.response : JSON.parse(this.responseText), this.__dtwAuthorization || "", sequence); }
       catch { reportIssue(responseIssue(this.status, null)); }
     }, { once: true });
     if (url.includes("/api/v0/chat_session/delete")) {

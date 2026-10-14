@@ -23,7 +23,7 @@ function fixture() {
   const context = vm.createContext({ window, XMLHttpRequest: class extends FakeXhr {}, Request, Response, Headers,
     URL, URLSearchParams, CustomEvent, Event, TextDecoder, crypto: globalThis.crypto, setTimeout, clearTimeout, console,
     localStorage: { getItem() { throw new Error("不得探测登录凭据"); } } });
-  for (const name of ["profile-result", "account-ready", "history-observed", "network-error", "history-result", "delete-result", "request-issue", "sessions-deleted"])
+  for (const name of ["profile-result", "account-ready", "history-observed", "network-error", "history-result", "delete-result", "request-issue", "sessions-deleted", "session-list", "session-list-result"])
     window.addEventListener(`dtw:${name}`, event => events.push({ name, ...JSON.parse(event.detail) }));
   vm.runInContext(requestSource, context); vm.runInContext(networkSource, context); vm.runInContext(historySource, context);
   const emit = (name, data = {}) => window.dispatchEvent(new CustomEvent(`dtw:${name}`, { detail: JSON.stringify(data) }));
@@ -101,7 +101,7 @@ context.chrome = { runtime: { getURL: path => path, onMessage: { addListener() {
     : snapshot.settings.automationPaused && !message.userAction ? { ok: true, blocked: true, code: "PAUSED" } : { ok: true, waitMs: 0 };
   return { ok: true };
 } }, storage: { local: { get: async () => ({ accountId: "account123" }), set: async () => {} } } };
-const end = '  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));';
+const end = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error));';
 vm.runInContext(contentSource.replace(end, `
   globalThis.fixture = { state, handleAction, syncChangedSessions, currentHistory, observeNativeHistory, history, getAccount, toasts: [] };
   showToast = message => fixture.toasts.push(message);
@@ -137,4 +137,64 @@ assert.equal(context.fixture.state.networkIssue.code, "AUTH_REQUIRED");
 await content.login(); assert.equal(context.fixture.state.networkIssue, null, "同账号重新登录后清除失效提醒");
 assert.equal((await context.fixture.getAccount()).accountId, "account123");
 assert.equal(content.calls.filter(call => call.url.includes("users/current")).length, 2, "插件不额外调用账号接口");
+
+// Official list pages are runtime data, replayable after the content script initializes.
+const lists = fixture();
+const listUrl = "https://chat.deepseek.com/api/v0/chat_session/fetch_page?lte_cursor.pinned=false&page_size=2";
+const pageData = (rows, hasMore = false) => ({ code: 0, data: { biz_code: 0, biz_data: { chat_sessions: rows, has_more: hasMore } } });
+const row = (id, updated_at) => ({ id, title: `官方标题 ${id}`, updated_at, pinned: false, current_message_id: 2 });
+const readPage = async (rows, url = listUrl, hasMore = false, account = "account123") => {
+  lists.route(() => new Response(JSON.stringify(pageData(rows, hasMore))));
+  await lists.window.fetch(url, { headers: { Authorization: `Bearer ${account}` } }); await settle();
+};
+const liveIds = () => lists.events.findLast(event => event.name === "session-list")?.sessions.map(item => item.sessionId);
+await readPage([row("live", 20), row("second", 10)], listUrl, true);
+assert.equal(liveIds(), undefined, "账号尚未确认时不对外发布会话列表");
+await lists.login();
+assert.deepEqual(liveIds(), ["live", "second"], "登录信息到达后回放已收到的官方列表");
+lists.route(() => new Response(JSON.stringify(pageData([row("older", 5)]))));
+lists.emit("session-list-more", { requestId: "more", accountId: "account123" }); await settle();
+assert.match(lists.calls.at(-1).url, /lte_cursor.updated_at=10/);
+assert.deepEqual(liveIds(), ["live", "second", "older"], "分页补充旧会话，不替换前一页");
+assert.equal(lists.events.findLast(event => event.name === "session-list").hasMore, false);
+await readPage([row("second", 30)]);
+assert.deepEqual(liveIds(), ["second"], "首屏重新返回时替换旧加载结果，旧缓存不能补回已消失的会话");
+let finishOld;
+lists.route(() => new Promise(resolve => { finishOld = resolve; }));
+const stale = lists.window.fetch(listUrl, { headers: { Authorization: "Bearer account123" } });
+await readPage([row("newest", 40)]);
+finishOld(new Response(JSON.stringify(pageData([row("stale", 1)])))); await stale; await settle();
+assert.deepEqual(liveIds(), ["newest"], "较旧请求迟到不会覆盖新列表");
+const listXhr = new lists.context.XMLHttpRequest(); listXhr.open("GET", listUrl); listXhr.setRequestHeader("Authorization", "Bearer account123"); listXhr.send();
+listXhr.status = 200; listXhr.responseType = "json"; listXhr.response = pageData([row("xhr-live", 50)]); listXhr.dispatchEvent(new Event("load"));
+assert.deepEqual(liveIds(), ["xhr-live"], "XHR 原生列表也作为官方数据来源");
+lists.emit("session-list-request"); assert.deepEqual(liveIds(), ["xhr-live"]);
+await readPage([row("other-account-chat", 60)], listUrl, false, "another-account");
+assert.deepEqual(liveIds(), ["xhr-live"], "另一账号的提前响应不会混入当前列表");
+await lists.login("another-account");
+assert.deepEqual(liveIds(), ["other-account-chat"]);
+assert.equal(lists.events.findLast(event => event.name === "session-list").accountId, "another-account");
+await readPage([], listUrl, false, "another-account"); assert.deepEqual(liveIds(), [], "有效空列表清空显示来源");
+await readPage([row("remain", 70)], listUrl, false, "another-account");
+lists.route(() => new Response(JSON.stringify({ code: 500, msg: "服务器繁忙" })));
+await lists.window.fetch(listUrl); await settle();
+assert.deepEqual(liveIds(), ["remain"], "错误响应不被当作空列表");
+lists.route(() => new Response(JSON.stringify(pageData([{ id: "bad/id" }]))));
+await lists.window.fetch(listUrl); await settle(); assert.deepEqual(liveIds(), ["remain"]);
+lists.route(() => new Response(JSON.stringify({ code: 0, data: { biz_code: 0 } })));
+lists.emit("delete-request", { requestId: "confirmed-delete", accountId: "another-account", sessionIds: ["remain"] }); await settle();
+assert.deepEqual(liveIds(), []);
+await readPage([row("remain", 1)], `${listUrl}&lte_cursor.updated_at=70`, false, "another-account");
+assert.deepEqual(liveIds(), [], "已确认删除的 ID 不会被迟到分页补回");
+const switching = fixture(); await switching.login();
+switching.route(() => new Response(JSON.stringify(pageData([row("old-account", 10)], true))));
+await switching.window.fetch(listUrl, { headers: { Authorization: "Bearer account123" } }); await settle();
+let finishMore;
+switching.route(() => new Promise(resolve => { finishMore = resolve; }));
+switching.emit("session-list-more", { requestId: "old-more", accountId: "account123" });
+await switching.login("another-account");
+finishMore(new Response(JSON.stringify(pageData([row("private-old-page", 5)])))); await settle();
+assert.match(switching.events.findLast(event => event.name === "network-error").error, /账号已切换/);
+assert.equal(switching.events.some(event => event.name === "session-list" && event.accountId === "another-account"
+  && event.sessions.some(item => item.sessionId === "private-old-page")), false, "切换账号期间的分页结果不会改用新账号身份发布");
 console.log(JSON.stringify({ ok: true, checks: "passive login/history, no rescan, targeted sync, deletion, zero auth retries, pause, rate limit, streamed restriction, native request preservation" }));
