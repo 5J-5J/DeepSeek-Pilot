@@ -8,7 +8,7 @@
   const NEW_CHAT = "__dtw_new_chat__";
   const state = { accountId: "", snapshot: null, knownAtStart: new Set(), newSessionIds: new Set(), pendingNewConversationAt: 0, pendingNewKnownIds: new Set(),
     importedIds: new Set(), syncingVisible: false, syncingTimes: false, sessionTimes: new Map(), reportedTips: new Map(), titles: new Map(),
-    collapsed: new Set(), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "", newChatMemoryOff: false,
+    collapsed: new Set(["dtw-automation"]), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "", newChatMemoryOff: false,
     menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
     bypassSend: false, pendingSend: false,
@@ -197,16 +197,14 @@
     const all = state.snapshot.sessions.filter((item) => !item.deleted);
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
     const helpers = all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose));
-    const retained = new Set(DTWHistory.sortSessionsNewestFirst(helpers.filter((item) => item.automationOrigin === "PLUGIN"))
-      .slice(0, 10).map((item) => item.sessionId));
-    const jobs = DTWHistory.sortSessionsNewestFirst(helpers.filter((item) => item.automationOrigin !== "PLUGIN" || retained.has(item.sessionId)));
+    const jobs = DTWHistory.sortSessionsNewestFirst(helpers).slice(0, 5);
     const groups = state.snapshot.projects.filter((item) => !item.archived && (!item.systemKind || item.systemKind === "AUTOMATION"))
       .sort((a, b) => Number(Boolean(a.systemKind)) - Number(Boolean(b.systemKind))
       || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.name.localeCompare(b.name, "zh"))
       .map((project) => ({ id: project.projectId, title: project.name,
       system: Boolean(project.systemKind), archived: Boolean(project.archived), pinned: Boolean(project.pinned),
       items: project.systemKind === "AUTOMATION" ? jobs : user.filter((item) => membership(item.sessionId)?.projectId === project.projectId) }));
-    const unassigned = { id: "unassigned", title: "未归类", items: user.filter((item) => !membership(item.sessionId)?.projectId) };
+    const unassigned = { id: "unassigned", title: "未归类会话", items: user.filter((item) => !membership(item.sessionId)?.projectId) };
     const suggestions = state.snapshot.jobs.filter((job) => job.type === "CLASSIFY" && job.status === "NEEDS_REVIEW" && job.result?.choice === "NEW");
     const alertCount = state.snapshot.alerts?.count || 0;
     const contentKey = JSON.stringify([currentId(), alertCount, state.selectedSessions && [...state.selectedSessions], [...groups, unassigned].map((group) => ({ ...group,
@@ -236,7 +234,7 @@
         automationHelpButton = document.createElement("button");
         automationHelpButton.type = "button"; automationHelpButton.className = "dtw-help-trigger";
         automationHelpButton.textContent = "i"; automationHelpButton.setAttribute("aria-label", "自动化会话详情");
-        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的会话。这些会话不参与普通会话的自动归类和记忆学习；可打开查看执行内容。插件辅助会话保留最近 10 条，队列空闲时更早记录会从 DeepSeek 删除。手动收纳和来源不明的会话全部保留，不占用这 10 个名额；手动收纳可恢复为普通会话。");
+        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的会话。侧边栏展示最近 5 条，默认收起，可展开查看执行内容。这些会话不参与普通会话的自动归类和记忆学习。插件辅助会话保留最近 10 条，队列空闲时更早记录会从 DeepSeek 删除。手动收纳和来源不明的会话不会自动删除，不占用这 10 个名额；手动收纳可恢复为普通会话。");
         document.getElementById(automationHelpButton.getAttribute("aria-describedby")).classList.add("dtw-help-tip", "dtw-owned");
       }
       helpSlot.append(automationHelpButton);
@@ -1230,8 +1228,8 @@
       : `<button data-action="show-session-menu" data-id="${esc(state.pickerSessionId)}">会话操作</button>`;
     box.innerHTML = `<div class="dtw-dialog"><header><strong>${selected?.purpose === "AUTOMATION" ? "自动化会话" : "选择项目"}</strong><button data-action="close-modal" aria-label="关闭">×</button></header>
       <div class="dtw-picker-list">${selected?.purpose === "AUTOMATION"
-        ? `<button data-action="automation-unmark" data-id="${esc(selected.sessionId)}">恢复为普通会话（未归类）</button>${nativeMenu}`
-        : `${choices || "请先新建项目"}${state.pickerSessionId === NEW_CHAT ? "" : `<button data-action="move-to" data-id="">移到未归类</button>`}<button data-action="create-and-move">＋ 新项目</button>${canMarkAutomation ? `<button data-action="automation-mark" data-id="${esc(selected.sessionId)}">收纳到自动化会话</button>` : ""}${nativeMenu}`}</div></div>`;
+        ? `<button data-action="automation-unmark" data-id="${esc(selected.sessionId)}">恢复为普通会话（未归类会话）</button>${nativeMenu}`
+        : `${choices || "请先新建项目"}${state.pickerSessionId === NEW_CHAT ? "" : `<button data-action="move-to" data-id="">移到未归类会话</button>`}<button data-action="create-and-move">＋ 新项目</button>${canMarkAutomation ? `<button data-action="automation-mark" data-id="${esc(selected.sessionId)}">收纳到自动化会话</button>` : ""}${nativeMenu}`}</div></div>`;
   }
   async function move(sessionId, projectId) {
     await send("membership-move", { sessionId, projectId }); await refresh(); showToast("会话归属已更新");
@@ -1292,7 +1290,7 @@
         closeMenu();
         await send(action, { sessionId: id });
         state.pickerSessionId = ""; renderModal(); await refresh();
-        showToast(action === "automation-mark" ? "已收纳到自动化会话" : "已恢复到未归类");
+        showToast(action === "automation-mark" ? "已收纳到自动化会话" : "已恢复到未归类会话");
       }
       if (action === "show-session-menu") {
         state.pickerSessionId = ""; renderModal();
@@ -1521,7 +1519,7 @@
       await restrictionReport;
       const collapseKey = `dtw.collapsed:${accountId}`;
       const saved = (await chrome.storage.local.get(collapseKey))[collapseKey];
-      state.collapsed = new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []);
+      state.collapsed = new Set([...(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []), "dtw-automation"]);
       await chrome.storage.local.set({ accountId });
       await send("request-ready", { observedAtMs });
       await refresh(); await syncVisibleSessions(); await syncSessionTimes();

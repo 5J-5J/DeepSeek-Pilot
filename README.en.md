@@ -29,6 +29,8 @@ The current version is **0.9.0, an early development release**, with these capab
 
 Automatic classification is currently disabled; assign chats manually. Memory is included only in the first message of regular chats. Project memory also requires a selected project and the switch enabled beforehand; enabling it later does not inject it retroactively. Display switches affect visibility, not memory transmission or learning.
 
+The sidebar's automation group starts collapsed whenever the page opens and shows the latest five chats when expanded. Regular chats outside projects are grouped under “未归类会话” (Unassigned conversations). The display limit does not change retention or cleanup rules.
+
 Personal memory prioritizes lasting preferences, response style and collaboration habits. Events are retained only when they matter to long-term life, work or future collaboration, summarized in one or two sentences about the key outcome rather than everyday details or full accounts. Later processing and compression also review existing unpinned event entries; user-pinned entries remain protected.
 
 With project memory enabled, reaching the context budget sends the current question, applicable memories and recent progress to a successor chat in the same project. The matching original draft is cleared only after receipt is confirmed. While waiting, the extension checks the successor's history and reports a heartbeat every 30 seconds; the task ends only when the reply is explicitly finished. Uncertain outcomes retain the original input for review.

@@ -111,7 +111,7 @@ try {
     `)}
     fixture.state.accountId='sidebar-test-account';
     fixture.state.snapshot={projects:[{projectId:'p1',name:'ip_relation'},{projectId:'p2',name:'metafinger'},
-      {projectId:'archived',name:'已归档项目',archived:true},{projectId:'auto',name:'自动化会话',systemKind:'AUTOMATION'}],
+      {projectId:'archived',name:'已归档项目',archived:true},{projectId:'dtw-automation',name:'自动化会话',systemKind:'AUTOMATION'}],
       sessions:${JSON.stringify([...titles, "旅行计划", "读书笔记"].map((title, i) => ({ sessionId: `s${i + 1}`, title, purpose: "USER", updatedAtMs: 20 - i })))}.concat([{sessionId:'helper',title:'记忆整理',purpose:'AUTOMATION',updatedAtMs:1},{sessionId:'archived-session',title:'归档会话',purpose:'USER'}]),
       memberships:${JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ sessionId: `s${i + 1}`, projectId: i < 6 ? "p1" : null })))}.concat([{sessionId:'archived-session',projectId:'archived'}]),settings:{},jobs:[]};
     document.querySelector('.new-chat').addEventListener('click',()=>{fixtureNewChats++;history.pushState(null,'','/a/chat');});
@@ -143,6 +143,8 @@ try {
     fixture.renderTree();`);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 9);
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session.active').length"), 1);
+  assert.equal(await evaluate("document.querySelector('[data-group=dtw-automation] .dtw-group-body').inert"), true, "自动化会话默认收起");
+  assert.equal(await evaluate("document.querySelector('.dtw-unassigned .dtw-group-label').textContent"), "未归类会话");
   assert.equal(await evaluate("document.querySelector('#native-history').style.display"), "none");
   assert.equal(await evaluate("document.querySelectorAll('.native-row').length"), 8, "原生节点保持挂载");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived]'))"), false, "聊天侧栏隐藏归档项目");
@@ -173,7 +175,7 @@ try {
   await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   await click("collapse", "p1");
   assert.equal(await evaluate(`${group}.querySelector('.dtw-group-body').inert`), true);
-  assert.deepEqual(await evaluate("fixtureStorage['dtw.collapsed:sidebar-test-account']"), ["p1"]);
+  assert.deepEqual(await evaluate("fixtureStorage['dtw.collapsed:sidebar-test-account']"), ["dtw-automation", "p1"]);
   await delay(80);
   const intermediate = await evaluate(`${group}.querySelector('.dtw-group-body').getBoundingClientRect().height`);
   assert.ok(intermediate > 0 && intermediate < height, `应有连续高度过渡：${intermediate}/${height} ${JSON.stringify(await evaluate(`({class:${group}.className,rows:getComputedStyle(${group}.querySelector('.dtw-group-body')).gridTemplateRows,duration:getComputedStyle(${group}.querySelector('.dtw-group-body')).transitionDuration})`))}`);
@@ -185,7 +187,7 @@ try {
   await click("collapse", "p1"); await click("collapse", "p1"); await click("collapse", "p1");
   await delay(260);
   assert.equal(await evaluate(`${group}.querySelector('.dtw-group-body').getBoundingClientRect().height`), height);
-  assert.deepEqual(await evaluate("fixtureStorage['dtw.collapsed:sidebar-test-account']"), []);
+  assert.deepEqual(await evaluate("fixtureStorage['dtw.collapsed:sidebar-test-account']"), ["dtw-automation"]);
   await click("collapse", "__projects__"); await delay(260);
   assert.equal(await evaluate("document.querySelector('.dtw-projects').getBoundingClientRect().height"), 0);
   assert.ok(await evaluate("document.querySelector('.dtw-unassigned').getBoundingClientRect().height") > 0);
@@ -285,11 +287,16 @@ try {
   assert.equal(await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='p2').archived"),true);
   await evaluate("fixture.state.snapshot.projects.find(project=>project.projectId==='archived').archived=false;fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-group=archived] [data-session=archived-session]'))"),true,'恢复后原会话仍在所属项目中');
-  await evaluate(`fixture.state.snapshot.sessions.push(...Array.from({length:14},(_,i)=>({sessionId:'p0-helper-'+i,purpose:'MEMORY',automationOrigin:'PLUGIN',updatedAtMs:i})),
-    {sessionId:'p0-manual',purpose:'AUTOMATION',automationOrigin:'MANUAL',updatedAtMs:-2},
-    {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:-3});fixture.renderTree()`);
-  assert.equal(await evaluate("document.querySelectorAll('[data-session^=p0-helper-]').length"), 10);
-  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=p0-manual]'))&&Boolean(document.querySelector('[data-session=p0-unknown]'))"), true, "手动收纳和来源不明会话不被数量上限隐藏");
+  await evaluate(`fixture.state.snapshot.sessions.push(...Array.from({length:14},(_,i)=>({sessionId:'p0-helper-'+i,purpose:'MEMORY',automationOrigin:'PLUGIN',updatedAtMs:i})));fixture.renderTree()`);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-session^=p0-helper-]')].map(node=>node.dataset.session)"),
+    ['p0-helper-13','p0-helper-12','p0-helper-11','p0-helper-10','p0-helper-9'], "仅展示最近五条");
+  assert.equal(await evaluate("fixture.state.snapshot.sessions.filter(row=>row.sessionId.startsWith('p0-helper-')).length"), 14, "显示数量不删除会话数据");
+  await evaluate(`fixture.state.snapshot.sessions.push({sessionId:'p0-manual',purpose:'AUTOMATION',automationOrigin:'MANUAL',updatedAtMs:100},
+    {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:99});fixture.renderTree()`);
+  assert.equal(await evaluate("document.querySelectorAll('[data-group=dtw-automation] .dtw-session').length"), 5);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-session=p0-manual]'))&&Boolean(document.querySelector('[data-session=p0-unknown]'))"), true);
+  await click("collapse", "dtw-automation");
+  assert.equal(await evaluate("document.querySelector('[data-group=dtw-automation] .dtw-group-body').inert"), false);
   await click("session-menu", "p0-manual");
   assert.equal(await evaluate("Boolean(document.querySelector('[data-action=automation-unmark]'))"), true);
   console.log(JSON.stringify({ ok: true, checks: "plugin menus open on one click, refreshed anchors, original callbacks without visible dropdowns, pin state, hints, archives and viewport" }));
