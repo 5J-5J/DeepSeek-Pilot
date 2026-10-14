@@ -84,6 +84,11 @@ assert.equal(job.sourceSessionId, "old-a"); assert.equal(job.memoryScope, "PERSO
 assert.match(job.payload, /回答用中文/); assert.match(job.payload, /我做软件开发/);
 assert.doesNotMatch(job.payload, /交付可离线使用的报表/, "个人整理请求不带项目设置中的目标");
 assert.match(job.payload, /追加、修改、合并、删除/); assert.doesNotMatch(job.payload, /"evidence"|disableMemoryIds|sourceMessageId/);
+assert.match(job.payload, /以个人长期偏好为主/);
+assert.match(job.payload, /重要事件用一两句概述/);
+assert.match(job.payload, /不需要等字数达到上限/);
+assert.match(job.payload, /日常琐事不保存/);
+assert.match(job.payload, /不记录转型过程/);
 assert.equal((await finish(job, [{ memoryId: "", kind: "偏好", content: "使用中文回答" },
   { memoryId: "", kind: "资料", content: "软件开发者" }])).status, "DONE", "无需证据，也不限制措辞");
 const profile = (await db.all("memories", accountId)).find(row => row.kind === "资料");
@@ -303,8 +308,11 @@ await db.put("memories", { accountId: storage.accountId, memoryId: "identity", s
 await db.put("memories", { accountId: storage.accountId, memoryId: "one-off", scope: "PERSONAL", projectId: null,
   kind: "其他", content: "一次性请求".repeat(1050), pinnedByUser: false, state: "ACTIVE", version: 1 });
 await ok("snapshot"); compact = (await compactJobs()).at(-1);
-assert.match(compact.payload, /使用者身份、主要职业、经常从事的工作/);
+assert.match(compact.payload, /个人偏好、长期习惯及必要身份背景/);
 assert.match(compact.payload, /主动放弃非必要的非固定记忆/);
+assert.match(compact.payload, /优先保留：反复适用的个人偏好/);
+assert.match(compact.payload, /事件只保留影响长期生活/);
+assert.match(compact.payload, /用一两句概述重要结果/);
 await finish(compact, [{ memoryId: "identity", kind: "资料", content: "软件工程师，常开发程序" }]);
 assert.equal((await db.get("memories", [storage.accountId, "one-off"])), null, "模型可主动放弃非必要条目");
 assert.ok(await db.get("memories", [storage.accountId, "identity"]));
