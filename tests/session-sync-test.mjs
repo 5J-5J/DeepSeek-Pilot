@@ -94,6 +94,7 @@ context.document = { createElement: node, head: node(), addEventListener() {}, q
 context.chrome = { runtime: { getURL: path => path, onMessage: { addListener() {} }, sendMessage: async message => {
   calls.push(message);
   if (message.type === "dtw:snapshot") return snapshot;
+  if (message.type === "dtw:session-list-observe") snapshot.memoryListRequired = false;
   if (message.type === "dtw:session-history") return { ok: true, history: message.sessionId === "valid" ? stored : null };
   if (message.type === "dtw:request-issue") snapshot.alerts.issue = { code: message.code, message: message.message, untilMs: message.untilMs };
   if (message.type === "dtw:request-ready") snapshot.alerts.issue = null;
@@ -103,7 +104,7 @@ context.chrome = { runtime: { getURL: path => path, onMessage: { addListener() {
 } }, storage: { local: { get: async () => ({ accountId: "account123" }), set: async () => {} } } };
 const end = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error));';
 vm.runInContext(contentSource.replace(end, `
-  globalThis.fixture = { state, handleAction, syncChangedSessions, currentHistory, observeNativeHistory, history, getAccount, toasts: [] };
+  globalThis.fixture = { state, refresh, handleAction, syncChangedSessions, currentHistory, observeNativeHistory, history, getAccount, toasts: [] };
   showToast = message => fixture.toasts.push(message);
   renderTree = renderMemoryButton = renderMemoryEditors = renderMessageInfo = restoreNativeSessions = () => {};
 `), context);
@@ -137,6 +138,16 @@ assert.equal(context.fixture.state.networkIssue.code, "AUTH_REQUIRED");
 await content.login(); assert.equal(context.fixture.state.networkIssue, null, "同账号重新登录后清除失效提醒");
 assert.equal((await context.fixture.getAccount()).accountId, "account123");
 assert.equal(content.calls.filter(call => call.url.includes("users/current")).length, 2, "插件不额外调用账号接口");
+content.emit("session-list", { accountId: "account123", sessions: [{ sessionId: "valid", createdAtMs: 100 }], hasMore: true });
+await settle();
+assert.deepEqual(Array.from(calls.findLast(call => call.type === "dtw:session-list-observe").sessions, row => row.sessionId), ["valid"],
+  "内容脚本将本次官方列表提供给后台记忆判定");
+const reports = calls.filter(call => call.type === "dtw:session-list-observe").length;
+content.emit("session-list", { accountId: "other-account", sessions: [{ sessionId: "foreign" }] }); await settle();
+assert.equal(calls.filter(call => call.type === "dtw:session-list-observe").length, reports);
+snapshot.memoryListRequired = true; await context.fixture.refresh();
+assert.equal(calls.filter(call => call.type === "dtw:session-list-observe").length, reports + 1,
+  "后台重启后页面刷新重新提供官方列表，不依赖持久缓存");
 
 // Official list pages are runtime data, replayable after the content script initializes.
 const lists = fixture();

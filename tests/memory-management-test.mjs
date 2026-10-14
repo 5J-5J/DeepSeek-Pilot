@@ -52,6 +52,7 @@ for (const [sessionId, timestamp] of [["old", 999], ["boundary", 1000], ["unknow
   await request("history-observe", { sessionId, ...history(timestamp) });
 }
 await request("session-observe", { sessionId: "current", loadedHistory: true, createdAtMs: 3000 });
+await request("session-list-observe", { sessions: await db.all("sessions", accountId) });
 let snapshot = await request("snapshot");
 assert.equal(snapshot.sessions.find((session) => session.sessionId === "old").createdAtMs, 999);
 assert.ok(snapshot.jobs.length === 2 && snapshot.jobs.every((job) => job.sourceSessionId === "boundary"));

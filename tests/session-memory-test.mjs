@@ -57,10 +57,15 @@ const running = async () => (await jobs()).find(job => job.status === "RUNNING")
 const project = (await ok("project-create", { name: "项目 A", goalShort: "交付可离线使用的报表" })).project;
 await ok("settings-update", { key: "automationPaused", value: true });
 assert.equal((await call("settings-update", { key: "distillEveryTurns", value: 1 })).ok, false);
+async function officialList(ids) {
+  const sessions = (await db.all("sessions", storage.accountId)).filter(row => !ids || ids.includes(row.sessionId));
+  return ok("session-list-observe", { sessions });
+}
 async function session(id, createdAtMs, lines, projectId = project.projectId) {
   await ok("session-observe", { sessionId: id, loadedHistory: true, createdAtMs });
   if (projectId) await ok("membership-move", { sessionId: id, projectId });
   await history(id, lines);
+  await officialList();
 }
 async function history(id, lines, deferMemoryUpdate = true) {
   const records = lines.flatMap((user, index) => [
@@ -118,16 +123,41 @@ const count = (await jobs()).length;
 await history("old-a", ["回答用中文", "我做软件开发"], false);
 assert.equal((await jobs()).length, count, "未变化的完整会话不会重复自动更新");
 
-// Editing an old session replays it and subsequent sessions in creation order.
+// Editing a session updates only its own versions, not unchanged later sessions.
 await history("old-a", ["回答用英文", "我做软件开发", "已撤回之前的中文偏好"], false);
-assert.equal((await jobs()).length, count + 4);
+assert.equal((await jobs()).length, count + 2);
 job = await running(); assert.equal(job.sourceSessionId, "old-a"); assert.match(job.payload, /已撤回之前/);
 await finish(job, [{ memoryId: preference.memoryId, kind: "偏好", content: "使用英文回答" }]);
-await finish(await running(), [{ memoryId: progress.memoryId, kind: "进展", content: "实现中" }]);
-job = await running(); assert.equal(job.sourceSessionId, "old-b"); assert.match(job.payload, /使用英文回答/);
-await finish(job, [{ memoryId: preference.memoryId, kind: "偏好", content: "使用英文回答" }]);
 await finish(await running(), [{ memoryId: progress.memoryId, kind: "进展", content: "已完成" }]);
-assert.equal((await db.get("memories", [accountId, progress.memoryId])).content, "已完成", "后续会话恢复较新的项目进展");
+assert.equal(await running(), undefined, "未变动的后续会话不重放");
+assert.equal((await db.get("memories", [accountId, progress.memoryId])).content, "已完成");
+
+// Residual pending refs and old replay jobs cannot restart an already processed version.
+const queue = (await db.all("projects", accountId)).find(row => row.projectId === "dtw-personal-memory");
+const doneA = (await jobs()).findLast(row => row.sourceSessionId === "old-a" && row.memoryScope === "PERSONAL");
+await db.put("projects", { ...queue, pendingSessionRefs: [{ ...doneA.sessionRef, scopes: ["PERSONAL"] }] });
+assert.equal((await vm.runInContext('enqueueMemorySessions("incremental-account")', context)).started, false,
+  "即使尚未清理残留待处理记录，入队也检查已完成版本");
+await db.put("jobs", { ...doneA, jobId: "obsolete-replay", status: "QUEUED", forced: false });
+const beforeResidual = (await jobs()).length;
+await ok("memory-reconcile"); await ok("memory-reconcile");
+assert.equal((await jobs()).length, beforeResidual);
+assert.equal((await db.get("jobs", [accountId, "obsolete-replay"])).status, "CANCELLED");
+assert.equal((await db.get("projects", [accountId, queue.projectId])).pendingSessionRefs.length, 0);
+
+// A manual current-session update has one source, including the latest conversation.
+await ok("settings-update", { key: "automationPaused", value: true });
+const single = await ok("memory-distill-current", { sessionId: "old-b" });
+assert.equal(single.jobIds.length, 1);
+assert.deepEqual((await jobs()).filter(row => single.jobIds.includes(row.jobId)).map(row => [row.sourceSessionId, row.memoryScope]), [["old-b", "PROJECT"]]);
+await ok("memory-reconcile");
+assert.equal((await db.get("jobs", [accountId, single.jobId])).status, "QUEUED", "自动补扫保留明确的单会话手动请求");
+await ok("job-queue-update", { jobId: single.jobId, action: "cancel" });
+const currentOnly = await ok("memory-distill-current", { sessionId: "current" });
+assert.equal(currentOnly.jobIds.length, 1);
+assert.equal((await db.get("jobs", [accountId, currentOnly.jobId])).sourceSessionId, "current");
+await ok("memory-reconcile");
+await ok("job-queue-update", { jobId: currentOnly.jobId, action: "cancel" });
 
 // Manual entry points stay independent, including when every session was processed.
 await ok("settings-update", { key: "automationPaused", value: true });
@@ -158,7 +188,7 @@ const cached = await ok("memory-job-retry", { jobId: job.jobId }); assert.equal(
 await ok("settings-update", { key: "automationPaused", value: false });
 assert.equal((await db.get("jobs", [accountId, job.jobId])).status, "DONE", "恢复队列后复用缓存保存，不重新发送");
 await settle();
-await finish(await running(), [{ memoryId: preference.memoryId, kind: "偏好", content: "英文且简洁" }]);
+assert.equal(await running(), undefined, "重试只处理失败的来源，不重放已完成的后续会话");
 
 // Whole-session validation catches edits to earlier messages between validation and commit.
 await ok("memory-distill-personal"); job = await running();
@@ -168,27 +198,34 @@ beforeCommit = async () => {
 };
 assert.equal((await finish(job, [])).status, "FAILED");
 assert.ok(await db.get("memories", [accountId, preference.memoryId]), "失败不删除旧记忆");
-await history("old-a", ["最新内容"], false);
+const runningB = await running();
+assert.equal(runningB.sourceSessionId, "old-b");
+const bRequests = (await jobs()).filter(row => row.sourceSessionId === "old-b").length;
+await history("old-a", ["最新内容", "仍做软件开发", "已撤回之前的中文偏好"], false);
+assert.equal((await running()).jobId, runningB.jobId, "较早会话变化不打断其他会话正在进行的整理");
+assert.equal((await finish(runningB, [])).status, "DONE", "正在进行的独立会话可以正常提交");
 job = await running(); assert.equal(job.sourceSessionId, "old-a");
 const staleResult = await call("automation-result", { jobId: (await jobs()).find(row => row.error === "消息或分支已变化").jobId, raw: '{"memories":[]}' });
 assert.equal(staleResult.ok, false, "过时结果不得写入");
 await finish(job, []); await finish(await running(), []);
 assert.equal((await db.all("memories", accountId)).filter(row => row.scope === "PERSONAL").length, 0);
-// Remaining project replay tasks can also return empty complete memories.
+// Independently changed project versions can also return empty complete memories.
 while (await running()) await finish(await running(), []);
+assert.equal((await jobs()).filter(row => row.sourceSessionId === "old-b").length, bRequests, "不取消重发未变动会话的请求");
 const pinned = (await ok("memory-save", { memory: { scope: "PERSONAL", kind: "偏好", content: "人工固定内容" } })).memory;
 await ok("memory-distill-personal");
 assert.equal((await finish(await running(), [])).status, "FAILED");
 assert.equal((await db.get("memories", [accountId, pinned.memoryId])).content, "人工固定内容", "模型不能删除人工固定内容");
 job = (await jobs()).find(row => row.status === "FAILED" && row.error === "不能删除人工固定记忆");
 const longPinned = (await ok("memory-save", { memory: { scope: "PERSONAL", kind: "资料", content: "x".repeat(1100) } })).memory;
+const fixedList = [pinned, longPinned].map(row => ({ memoryId: row.memoryId, kind: row.kind, content: row.content }));
+assert.equal((await running()).sourceSessionId, "old-b");
+assert.equal((await finish(await running(), fixedList)).status, "FAILED", "人工修改记忆后旧输入生成的结果不能覆盖新记忆");
 await ok("memory-job-retry", { jobId: job.jobId });
 assert.match((await running()).payload, /当前已有正文 1106 字，其中固定正文 1106 字/,
   "重试读取最新固定记忆用量，避免模型误把全部额度用于新增");
-const fixedList = [pinned, longPinned].map(row => ({ memoryId: row.memoryId, kind: row.kind, content: row.content }));
 assert.equal((await finish(await running(), fixedList)).status, "DONE", "完整输出允许保留合法的长手写条目");
-assert.equal((await running()).sourceSessionId, "old-b", "主动重试前序会话后，后续会话按顺序重放");
-await finish(await running(), fixedList);
+assert.equal(await running(), undefined, "人工修改记忆后取消的后续任务不会被单会话重试重新创建");
 
 // Migrate obsolete jobs and metadata without deleting existing memory content.
 storage.accountId = "migration-account";
@@ -213,7 +250,9 @@ assert.equal(migrated.settings.distillEveryTurns, undefined);
 const legacyMemory = migrated.memories.find(row => row.memoryId === "legacy-memory");
 assert.equal(legacyMemory.content, "中文回答"); assert.equal(legacyMemory.state, "ACTIVE");
 assert.equal(Object.hasOwn(legacyMemory, "evidence"), false); assert.ok(legacyMemory.sourceSessionFingerprint);
-assert.equal((await ok("memory-distill-personal")).jobIds.length, 1, "自动化会话不会使最新普通会话成为旧会话");
+await officialList();
+assert.deepEqual((await jobs()).filter(row => row.status === "RUNNING").map(row => row.sourceSessionId), ["legacy-old"],
+  "自动化会话不会使最新普通会话成为旧会话");
 await finish(await running(), []);
 // An oversized session update launches a separate compression conversation before committing the update.
 storage.accountId = "compression-session";
@@ -360,4 +399,65 @@ await finish(await running(), []);
 await ok("memory-reconcile");
 assert.equal(await running(), undefined);
 assert.equal((await jobs()).length, beforeHelper, "已完成的同一版本不会因辅助会话同步再次整理");
+
+// Only live official IDs may launch memory work; unloaded pages retain their mappings.
+storage.accountId = "official-memory-list";
+await ok("settings-update", { key: "automationPaused", value: true });
+const retainedProject = (await ok("project-create", { name: "分页归属" })).project;
+for (const [id, time] of [["deleted-offline", 100], ["unloaded", 150], ["listed-old", 200], ["listed-current", 300], ["ghost-newest", 400]]) {
+  await ok("session-observe", { sessionId: id, loadedHistory: true, createdAtMs: time });
+  await history(id, ["以后回答简洁"]);
+}
+await ok("membership-move", { sessionId: "unloaded", projectId: retainedProject.projectId });
+await ok("memory-reconcile");
+assert.equal((await jobs()).length, 0, "本地历史缓存不能在收到官方列表前发起请求");
+assert.equal((await call("memory-distill-personal")).ok, false, "手动整理等待官方列表确认");
+await officialList(["listed-old", "listed-current"]);
+assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["listed-old"], "缓存中的已删除会话及未加载页不入队");
+assert.equal((await db.get("memberships", [storage.accountId, "unloaded"])).projectId, retainedProject.projectId);
+assert.equal((await db.get("sessions", [storage.accountId, "unloaded"])).deleted, false);
+await officialList(["listed-old", "listed-current"]);
+assert.equal((await jobs()).length, 1, "重复官方列表不重建任务");
+await ok("settings-update", { key: "automationPaused", value: false });
+const listedJob = await running(); assert.ok(listedJob);
+const helperList = await ok("session-list-observe", { sessions: [{ sessionId: "helper-only", createdAtMs: 500 }] }, listedJob.tabId);
+assert.equal(helperList.ignored, true, "自动化辅助标签页的分页列表不替换普通页面的确认范围");
+assert.equal((await db.get("jobs", [storage.accountId, listedJob.jobId])).status, "RUNNING");
+await officialList(["listed-current"]);
+assert.equal((await db.get("jobs", [storage.accountId, listedJob.jobId])).status, "CANCELLED", "来源从官方列表消失后停止运行中的旧请求");
+assert.equal((await call("memory-distill-current", { sessionId: "listed-old" })).ok, false);
+const late = await call("automation-result", { jobId: listedJob.jobId, raw: '{"memories":[]}' }, listedJob.tabId);
+assert.equal(late.ok, false, "官方列表移除来源后的迟到结果不能写入");
+await ok("settings-update", { key: "automationPaused", value: true });
+await officialList(["unloaded", "listed-old", "listed-current"]);
+assert.equal((await jobs()).filter(row => row.status === "QUEUED").length, 3, "加载更多后仅补上已确认会话及其项目范围");
+const queuedBeforeRestart = (await jobs()).filter(row => row.status === "QUEUED").map(row => row.jobId);
+const tabsBeforeRestart = nextTabId;
+context = createContext(); await runWorkbench(context);
+await ok("settings-update", { key: "automationPaused", value: false });
+assert.equal(nextTabId, tabsBeforeRestart, "后台重启后缓存队列等待页面重新提供官方列表");
+assert.equal((await ok("snapshot")).memoryListRequired, true);
+assert.equal((await jobs()).filter(row => row.status === "QUEUED").length, queuedBeforeRestart.length);
+await officialList(["unloaded", "listed-old", "listed-current"]);
+while (await running()) await finish(await running(), []);
+const officialDoneCount = (await jobs()).length;
+await officialList(["unloaded", "listed-old", "listed-current"]); await ok("memory-reconcile");
+assert.equal((await jobs()).length, officialDoneCount, "恢复队列及反复同步不重发已完成版本");
+const latestManual = await ok("memory-distill-current", { sessionId: "listed-current" });
+assert.equal(latestManual.jobIds.length, 1);
+await finish(await running(), []);
+await ok("memory-reconcile");
+assert.equal(await running(), undefined, "最新会话的手动整理完成后不扩展为自动重放");
+
+storage.accountId = "manual-source-isolation";
+await ok("settings-update", { key: "automationPaused", value: true });
+await session("other-unprocessed", 100, ["尚未整理的其他会话"], null);
+await session("manual-target", 200, ["只整理这一条"], null);
+for (const row of await jobs()) await db.remove("jobs", [storage.accountId, row.jobId]);
+const targetOnly = await ok("memory-distill-current", { sessionId: "manual-target" });
+assert.equal(targetOnly.jobIds.length, 1);
+assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["manual-target"]);
+await ok("settings-update", { key: "automationPaused", value: false });
+await finish(await running(), []);
+assert.equal((await jobs()).length, 1, "单会话手动整理完成后也不会提交其他尚未整理的会话");
 console.log("Session memory checks passed: ordering, prompts, full replacement, compression, retries and atomic validation.");

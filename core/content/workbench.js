@@ -689,6 +689,10 @@
   async function refresh() {
     if (!state.accountId) return;
     state.snapshot = await send("snapshot");
+    if (state.snapshot.memoryListRequired && state.officialSessions && !state.automationRunning && !state.rolloverRunning) {
+      await send("session-list-observe", { sessions: [...state.officialSessions.values()] });
+      state.snapshot = await send("snapshot");
+    }
     state.networkIssue = state.snapshot.alerts?.issue || null;
     currentRequestIssue();
     if (!state.networkIssue) root.querySelector(".dtw-request-notice")?.remove();
@@ -1547,7 +1551,8 @@
     for (const id of state.officialSessions.keys()) state.listedSessionIds.add(id);
     state.hasMoreSessions = Boolean(detail.hasMore);
     renderTree();
-    syncVisibleSessions().then(syncSessionTimes).catch((error) => showToast(`会话归属同步失败：${error.message}`));
+    send("session-list-observe", { sessions: [...state.officialSessions.values()] }).then(refresh)
+      .then(syncVisibleSessions).then(syncSessionTimes).catch((error) => showToast(`会话归属同步失败：${error.message}`));
   });
   window.addEventListener("dtw:session-times", (event) => {
     const detail = parse(event);
@@ -1576,7 +1581,7 @@
       if (state.accountId && state.accountId !== accountId) {
         state.snapshot = null; state.sessionTimes.clear(); state.dirtySessions.clear(); state.importedIds.clear(); restoreNativeSessions();
         state.newSessionIds.clear(); state.pendingNewConversationAt = 0;
-        state.officialSessions = new Map(); state.listedSessionIds.clear(); state.removedSessionIds.clear(); state.titles.clear(); state.hasMoreSessions = false;
+        state.officialSessions = null; state.listedSessionIds.clear(); state.removedSessionIds.clear(); state.titles.clear(); state.hasMoreSessions = false;
       }
       state.accountId = accountId; state.startupFailed = false;
       currentRequestIssue();

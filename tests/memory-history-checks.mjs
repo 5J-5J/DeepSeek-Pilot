@@ -144,6 +144,8 @@ export async function runMemoryHistoryChecks(evaluate, reload) {
     const queue=await ensurePersonalQueue(accountId);
     const ref=sessionRef(turn,['PERSONAL']);
     await DTWDB.put('sessions',{accountId,sessionId:'zz-current',purpose:'USER',createdAtMs:1000});
+    await call('session-list-observe',{sessions:[{sessionId:'repeat-source',createdAtMs:100},
+      {sessionId:'repeat-source-later',createdAtMs:100},{sessionId:'zz-current',createdAtMs:1000}]});
     await DTWDB.put('projects',{...queue,pendingSessionRefs:[ref]});
     const job={accountId,jobId:'history-repeat',type:'DISTILL',status:'RUNNING',tabId:55,sessionVersion:2,
       memoryScope:'PERSONAL',updateScopes:['PERSONAL'],projectId:null,memoryEpoch:await memoryEpoch(accountId,'PERSONAL',null),
@@ -158,7 +160,7 @@ export async function runMemoryHistoryChecks(evaluate, reload) {
     const autoDeleted={...manual('auto-deleted','模型删除的过时事实'),pinnedByUser:false,
       sourceSessionId:turn.sessionId,sourceMessageId:2,sourceSessionFingerprint:turn.fingerprint};
     await DTWDB.put('memories',autoDeleted);
-    const deletionJob={...job,jobId:'auto-delete',status:'RUNNING',cachedResult:null,memorySnapshot:null};
+    const deletionJob={...job,jobId:'auto-delete',status:'RUNNING',forced:true,cachedResult:null,memorySnapshot:null};
     await prepareMemoryJob(deletionJob);await DTWDB.put('jobs',deletionJob);
     await finishMemoryJob(accountId,deletionJob,{memories:kept});
     const deletedHistory=await history();

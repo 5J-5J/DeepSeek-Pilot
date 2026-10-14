@@ -289,6 +289,7 @@ ${backgroundSource}
       {messageId:2,parentId:1,role:'ASSISTANT',status:'FINISHED',fragments:[{type:'RESPONSE',content:'确认'}]}
     ]});
     await call({type:'dtw:session-observe',sessionId:'active-session',loadedHistory:true,createdAtMs:200});
+    await call({type:'dtw:session-list-observe',sessions:[{sessionId:'atomic-session',createdAtMs:100},{sessionId:'active-session',createdAtMs:200}]});
     const batches=(await DTWDB.all('jobs','ui-test-account')).filter(job=>job.sessionVersion && job.sourceSessionId==='atomic-session');
     let reply;
     for(const batch of batches) {

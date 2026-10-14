@@ -303,6 +303,7 @@ async function snapshot(accountId, recovery) {
     chrome.action.setBadgeBackgroundColor({ color: "#dc4444" }).catch(() => {});
   }
   return { ok: true, projects, sessions, memberships, memories: memories.filter((memory) => !DB.validMemory || DB.validMemory(memory)),
+    memoryListRequired: !officialMemorySessions.has(accountId),
     alerts,
     memoryRecovery: { ...recovery, snapshotCount: history?.snapshots?.length || 0, lastRecovery: history?.lastRecovery || null },
     personalMemoryBudget: { used: personalMemoryCharacters(memories.filter((item) => item.scope === "PERSONAL" && item.state === "ACTIVE")),
@@ -486,7 +487,7 @@ async function observeSession(accountId, message, sender = {}) {
     const membership = await DB.get("memberships", key(accountId, sessionId));
     if (membership && !membership.manualLock && !membership.projectId) classify(accountId, sessionId, membership.version).catch(() => {});
   }
-  if (session.purpose === "USER" && (!previous || message.newSession)) await refreshSessionMemory(accountId);
+  if (session.purpose === "USER" && !message.deferMemoryUpdate && (!previous || message.newSession)) await refreshSessionMemory(accountId);
   return { ok: true, created: !previous };
 }
 
@@ -689,7 +690,7 @@ async function drainJobQueueNow() {
       job.memorySnapshot = null; job.error = "个人记忆已变化，旧压缩已取消";
       await DB.put("jobs", job);
     }
-    if (job.status === "QUEUED" && job.type === "DISTILL") {
+    if (job.status === "QUEUED" && job.type === "DISTILL" && officialMemorySessions.has(job.accountId)) {
       if (!await memoryJobValid(job)) {
         job.status = "CANCELLED"; job.payload = null;
         job.result = { reason: "记忆已删除或来源不在起始时间范围内，请重新整理" };
@@ -748,6 +749,7 @@ async function drainJobQueueNow() {
       }
     }
     if (job.type === "DISTILL") {
+      if (!officialMemorySessions.has(accountId)) continue;
       if (jobs.some((entry) => ["DISTILL", "COMPACT"].includes(entry.type) && entry.accountId === accountId && entry.status === "RUNNING")) continue;
       if (job.memoryScope === "PERSONAL" && jobs.some((entry) => entry.type === "COMPACT" && entry.accountId === accountId
       && ["QUEUED", "PENDING", "RUNNING"].includes(entry.status))) continue;
@@ -1308,6 +1310,7 @@ async function startRollover(accountId, message) {
 
 async function markDeleted(accountId, message) {
   for (const sessionId of (Array.isArray(message.sessionIds) ? message.sessionIds : [])) {
+    officialMemorySessions.get(accountId)?.delete(sessionId);
     const session = await DB.get("sessions", key(accountId, sessionId));
     if (session) { session.deleted = true; session.updatedAtMs = NOW(); await DB.put("sessions", session); }
     for (const job of await DB.all("jobs", accountId)) if (job.sourceSessionId === sessionId
@@ -1377,6 +1380,7 @@ const handlers = {
   "automation-mark": (a, m) => mutateMemories(a, () => markAutomationSession(a, m)),
   "automation-unmark": (a, m) => mutateMemories(a, () => unmarkAutomationSession(a, m)),
   "session-observe": (a, m, s) => mutateMemories(a, () => observeSession(a, m, s)),
+  "session-list-observe": (a, m, s) => mutateMemories(a, () => observeMemorySessionList(a, m, s)),
   "session-times-observe": (a, m) => mutateMemories(a, () => observeSessionTimes(a, m)),
   "history-observe": (a, m) => mutateMemories(a, () => observeHistory(a, m)),
   "memory-reconcile": reconcileStoredMemory,
