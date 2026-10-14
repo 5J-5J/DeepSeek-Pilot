@@ -107,7 +107,7 @@ try {
     ${historySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
-      globalThis.fixture={state,renderTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync};
+      globalThis.fixture={state,renderTree,showLoadingTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -332,6 +332,22 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 0, "官方空列表不显示本地旧会话");
   await evaluate("document.querySelector('#native-history').replaceChildren();fixture.renderTree()");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-tree [data-action=create-project]'))"), true, "没有官方会话时仍可管理项目");
+  // DeepSeek adds native links inside a nested scroller after the loading tree was mounted.
+  await evaluate(`(()=>{
+    const scroller=document.querySelector('.ds-scroll-area');
+    const outer=document.createElement('div');outer.className='ds-scroll-area';scroller.before(outer);outer.append(scroller);
+    document.querySelectorAll('.dtw-tree').forEach(tree=>tree.remove());
+    const savedSnapshot=fixture.state.snapshot;fixture.state.snapshot=null;fixture.showLoadingTree();
+    const link=document.createElement('a');link.href='/a/chat/s/s1';link.textContent='后加载的官方会话';scroller.append(link);
+    fixture.state.snapshot=savedSnapshot;fixture.renderTree();
+  })()`);
+  assert.equal(await evaluate("document.querySelectorAll('.dtw-tree').length"), 1, "原生列表挂载位置变化后只能保留一个项目树");
+  assert.equal(await evaluate("Boolean(document.querySelector('.dtw-loading'))"), false, "就绪后清除加载占位");
+  await evaluate("fixture.toggleGroup('p1',false)");
+  await click("collapse", "p1");
+  assert.equal(await evaluate(`${group}.classList.contains('is-collapsed')`), true, "点击立即收起当前项目树");
+  await click("collapse", "p1");
+  assert.equal(await evaluate(`${group}.classList.contains('is-collapsed')`), false, "点击立即展开当前项目树");
   // Exercise the production entry point as well as the isolated rendering helpers above.
   for (const failure of ["queue", "snapshot-error", "snapshot-timeout"]) {
     await page.call("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/a/chat?startup=${failure}` });

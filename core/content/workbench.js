@@ -154,19 +154,28 @@
       child.style.display = "none";
     }
   }
+  let sidebarTree = null;
+  function mountSidebarTree(list) {
+    sidebarTree ||= list.querySelector(":scope > .dtw-tree") || document.querySelector(".dtw-tree") || document.createElement("section");
+    sidebarTree.className = "dtw-tree dtw-owned";
+    // DeepSeek may move the native list into a nested scroller after startup.
+    if (sidebarTree.parentElement !== list) list.prepend(sidebarTree);
+    document.querySelectorAll(".dtw-tree").forEach((tree) => { if (tree !== sidebarTree) tree.remove(); });
+    return sidebarTree;
+  }
   function showLoadingTree() {
     if (state.startupFailed) return;
     const list = listContainer();
     if (!list) return;
     if (list.querySelector(":scope > .dtw-tree")) return;
     if (state.snapshot) { renderTree(); return; }
-    const tree = document.createElement("section");
-    tree.className = "dtw-tree dtw-owned";
+    const tree = mountSidebarTree(list);
+    tree.dtwContentKey = null;
     tree.innerHTML = '<div class="dtw-tools"><strong>项目</strong></div><div class="dtw-loading">正在加载会话…</div>';
-    list.prepend(tree);
   }
   function restoreNativeSessions() {
     document.querySelectorAll(".dtw-tree").forEach((tree) => tree.remove());
+    sidebarTree = null;
     document.querySelectorAll("[data-dtw-original-display]").forEach((child) => {
       child.style.display = child.dataset.dtwOriginalDisplay;
       delete child.dataset.dtwOriginalDisplay;
@@ -210,8 +219,7 @@
   function renderTree() {
     const list = listContainer();
     if (!list || !state.snapshot) return;
-    let tree = list.querySelector(":scope > .dtw-tree");
-    if (!tree) { tree = document.createElement("section"); tree.className = "dtw-tree dtw-owned"; list.prepend(tree); }
+    const tree = mountSidebarTree(list);
     const nativeOrder = new Map(nativeLinks().map((link, index) => [idFromHref(link.href), index]));
     const all = sidebarSessions();
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
@@ -273,7 +281,7 @@
   function toggleGroup(id, collapsed = !state.collapsed.has(id)) {
     closeMenu();
     collapsed ? state.collapsed.add(id) : state.collapsed.delete(id);
-    const tree = document.querySelector(".dtw-tree");
+    const tree = sidebarTree;
     const group = id === "__projects__" ? tree?.querySelector(".dtw-projects")
       : [...(tree?.querySelectorAll("[data-group]") || [])].find((node) => node.dataset.group === id);
     group?.classList.toggle("is-collapsed", collapsed);
