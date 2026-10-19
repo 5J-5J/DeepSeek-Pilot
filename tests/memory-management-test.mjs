@@ -79,7 +79,7 @@ const oldJob = snapshot.jobs.find((job) => job.memoryScope === "PERSONAL");
 await db.put("jobs", { ...oldJob, status: "RUNNING", tabId: 1 });
 assert.equal((await request("memory-delete-batch", deletion)).deleted, 1);
 const stale = await request("automation-result", { jobId: oldJob.jobId, raw: JSON.stringify({ memories: [], disableMemoryIds: [] }) });
-assert.equal(stale.status, "FAILED", "删除前启动的整理不能写回结果");
+assert.equal(stale.status, "CANCELLED", "删除前启动的整理不能写回结果，也无需用户重试");
 assert.equal((await request("memory-save", { memory: personal })).ok, false, "已删除条目的旧编辑窗口不能重建该条目");
 assert.equal((await request("memory-delete-batch", { scope: "PROJECT", projectId: project.projectId,
   memories: [{ memoryId: projectMemory.memoryId, version: projectMemory.version }] })).deleted, 1);

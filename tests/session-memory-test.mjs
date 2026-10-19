@@ -192,12 +192,18 @@ assert.equal(await running(), undefined, "重试只处理失败的来源，不�
 
 // Whole-session validation catches edits to earlier messages between validation and commit.
 await ok("memory-distill-personal"); job = await running();
+const staleJobId = job.jobId;
 beforeCommit = async () => {
   const row = await db.get("messages", [accountId, "old-a", 1]);
   row.fragments[0].content = "提交时发生变化"; await db.put("messages", row);
 };
-assert.equal((await finish(job, [])).status, "FAILED");
-assert.ok(await db.get("memories", [accountId, preference.memoryId]), "失败不删除旧记忆");
+assert.equal((await finish(job, [])).status, "CANCELLED");
+assert.ok(await db.get("memories", [accountId, preference.memoryId]), "过期结果不删除旧记忆");
+job = await running();
+assert.equal(job.sourceSessionId, "old-a", "会话在提交期间变化后自动使用新内容重试");
+assert.match(job.payload, /提交时发生变化/);
+await finish(job, []);
+while ((await running())?.sourceSessionId === "old-a") await finish(await running(), []);
 const runningB = await running();
 assert.equal(runningB.sourceSessionId, "old-b");
 const bRequests = (await jobs()).filter(row => row.sourceSessionId === "old-b").length;
@@ -205,7 +211,7 @@ await history("old-a", ["最新内容", "仍做软件开发", "已撤回之前�
 assert.equal((await running()).jobId, runningB.jobId, "较早会话变化不打断其他会话正在进行的整理");
 assert.equal((await finish(runningB, [])).status, "DONE", "正在进行的独立会话可以正常提交");
 job = await running(); assert.equal(job.sourceSessionId, "old-a");
-const staleResult = await call("automation-result", { jobId: (await jobs()).find(row => row.error === "消息或分支已变化").jobId, raw: '{"memories":[]}' });
+const staleResult = await call("automation-result", { jobId: staleJobId, raw: '{"memories":[]}' });
 assert.equal(staleResult.ok, false, "过时结果不得写入");
 await finish(job, []); await finish(await running(), []);
 assert.equal((await db.all("memories", accountId)).filter(row => row.scope === "PERSONAL").length, 0);
@@ -220,12 +226,43 @@ job = (await jobs()).find(row => row.status === "FAILED" && row.error === "不�
 const longPinned = (await ok("memory-save", { memory: { scope: "PERSONAL", kind: "资料", content: "x".repeat(1100) } })).memory;
 const fixedList = [pinned, longPinned].map(row => ({ memoryId: row.memoryId, kind: row.kind, content: row.content }));
 assert.equal((await running()).sourceSessionId, "old-b");
-assert.equal((await finish(await running(), fixedList)).status, "FAILED", "人工修改记忆后旧输入生成的结果不能覆盖新记忆");
+assert.equal((await finish(await running(), fixedList)).status, "CANCELLED", "人工修改记忆后旧输入生成的结果不能覆盖新记忆");
 await ok("memory-job-retry", { jobId: job.jobId });
 assert.match((await running()).payload, /当前已有正文 1106 字，其中固定正文 1106 字/,
   "重试读取最新固定记忆用量，避免模型误把全部额度用于新增");
 assert.equal((await finish(await running(), fixedList)).status, "DONE", "完整输出允许保留合法的长手写条目");
-assert.equal(await running(), undefined, "人工修改记忆后取消的后续任务不会被单会话重试重新创建");
+assert.match((await running()).payload, /当前已有正文 1106 字，其中固定正文 1106 字/,
+  "过期的后续手动任务自动使用最新固定记忆重新整理");
+await finish(await running(), fixedList);
+assert.equal(await running(), undefined);
+
+// A queued update also re-reads memories changed before it starts, without a user retry.
+storage.accountId = "stale-queued";
+await ok("settings-update", { key: "automationPaused", value: true });
+await session("queued-old", 100, ["以后回答简洁"], null);
+await session("queued-current", 200, ["当前对话"], null);
+const queuedBeforeEdit = (await jobs()).find(row => row.status === "QUEUED");
+assert.ok(queuedBeforeEdit);
+const manualMemory = (await ok("memory-save", { memory: { scope: "PERSONAL", kind: "偏好", content: "优先中文" } })).memory;
+await ok("memory-delete-batch", { scope: "PERSONAL", memories: [{ memoryId: manualMemory.memoryId, version: manualMemory.version }] });
+await ok("settings-update", { key: "automationPaused", value: false });
+const queuedReplacement = await running();
+assert.notEqual(queuedReplacement.jobId, queuedBeforeEdit.jobId);
+assert.doesNotMatch(queuedReplacement.payload, /优先中文/);
+assert.equal((await db.get("jobs", [storage.accountId, queuedBeforeEdit.jobId])).status, "CANCELLED");
+await finish(queuedReplacement, []);
+assert.equal(await running(), undefined);
+
+// Failed stale jobs from earlier versions are retired when the official list returns.
+storage.accountId = "legacy-stale";
+await ok("settings-update", { key: "automationPaused", value: true });
+await session("legacy-stale-old", 100, ["长期偏好"], null);
+await session("legacy-stale-current", 200, ["当前对话"], null);
+const legacyStale = (await jobs()).find(row => row.status === "QUEUED");
+await db.put("jobs", { ...legacyStale, status: "FAILED", error: "Error: 记忆、会话内容或项目已变化，旧结果不会写入；请重新更新" });
+await officialList();
+assert.equal((await db.get("jobs", [storage.accountId, legacyStale.jobId])).status, "CANCELLED");
+assert.ok((await jobs()).some(row => row.jobId !== legacyStale.jobId && row.status === "QUEUED"));
 
 // Migrate obsolete jobs and metadata without deleting existing memory content.
 storage.accountId = "migration-account";

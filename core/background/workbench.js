@@ -680,6 +680,7 @@ async function drainJobQueueNow() {
   for (const accountId of new Set((await DB.all("jobs")).filter((job) => job.type === "DISTILL").map((job) => job.accountId)))
     await ensureSessionMemory(accountId);
   const jobs = (await DB.all("jobs")).filter((job) => QUEUED_JOB_TYPES.has(job.type));
+  const staleMemoryQueued = [];
   for (const job of jobs) {
     if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY" && ["QUEUED", "PENDING", "RUNNING"].includes(job.status)) {
       job.status = "CANCELLED";
@@ -698,8 +699,9 @@ async function drainJobQueueNow() {
     if (job.status === "QUEUED" && job.type === "DISTILL" && officialMemorySessions.has(job.accountId)) {
       if (!await memoryJobValid(job)) {
         job.status = "CANCELLED"; job.payload = null;
-        job.result = { reason: "记忆已删除或来源不在起始时间范围内，请重新整理" };
+        job.result = { ignored: "stale-memory-input" };
         job.updatedAtMs = NOW(); await DB.put("jobs", job);
+        staleMemoryQueued.push(job);
       }
     }
     if (job.status === "RUNNING" && job.tabId && chrome.tabs.get) {
@@ -713,6 +715,16 @@ async function drainJobQueueNow() {
     if ((job.status === "PENDING" && job.type !== "ROLLOVER" && !job.tabId)
       || (job.status === "RUNNING" && !job.tabId && NOW() - job.updatedAtMs > 60000)) {
       job.status = "QUEUED"; job.updatedAtMs = NOW(); await DB.put("jobs", job);
+    }
+  }
+  if (staleMemoryQueued.length) {
+    const { accountId } = await chrome.storage.local.get("accountId");
+    if (accountId && officialMemorySessions.has(accountId)) {
+      for (const job of staleMemoryQueued.filter((entry) => entry.accountId === accountId))
+        await requeueStaleMemoryJob(job, { drain: false });
+      await collectMemorySessions(accountId);
+      await enqueueMemorySessions(accountId, { drain: false });
+      return drainJobQueueNow();
     }
   }
   const activeJobs = jobs.filter((job) => job.status === "RUNNING").sort(queueCompare);
@@ -772,8 +784,15 @@ async function drainJobQueueNow() {
               if (next.started) return drainJobQueueNow();
             }
             catch (error) {
-              job.status = "FAILED"; job.error = String(error.message); job.updatedAtMs = NOW();
+              job.status = error instanceof StaleMemoryJobError ? "CANCELLED" : "FAILED";
+              job.error = job.status === "FAILED" ? String(error.message) : null;
+              if (job.status === "CANCELLED") { job.cachedResult = null; job.result = { ignored: "stale-memory-input" }; }
+              job.updatedAtMs = NOW();
               await DB.put("jobs", job);
+              if (job.status === "CANCELLED") {
+                await requeueStaleMemoryJob(job, { drain: false });
+                return drainJobQueueNow();
+              }
             }
             continue;
           }
@@ -962,8 +981,12 @@ async function automationResult(accountId, message, sender) {
     return { ok: true, ignored: true };
   }
   if (message.automationSessionId) await recordAutomationSession(accountId, job, message.automationSessionId);
+  let staleMemoryResult = false;
   try {
     if (message.error) throw new Error(clean(message.error, 300));
+    if (job.type === "DISTILL" && (!await memoryJobValid(job)
+      || job.memorySnapshot && !memorySnapshotMatches(job, await DB.all("memories", accountId))))
+      throw new StaleMemoryJobError("记忆、会话内容或项目已变化，旧结果不会写入");
     const result = parseJSON(message.raw);
     if (job.type === "CLASSIFY") {
       if (result.sessionId !== job.sourceSessionId || !["EXISTING", "NEW", "UNASSIGNED"].includes(result.choice)) throw new Error("归类 JSON 校验失败");
@@ -989,11 +1012,18 @@ async function automationResult(accountId, message, sender) {
     } else if (job.type === "DISTILL") {
       await finishMemoryJob(accountId, job, result);
     }
-  } catch (error) { job.status = "FAILED"; job.error = String(error.message); }
+  } catch (error) {
+    staleMemoryResult = job.type === "DISTILL" && error instanceof StaleMemoryJobError;
+    job.status = staleMemoryResult ? "CANCELLED" : "FAILED";
+    job.error = staleMemoryResult ? null : String(error.message);
+    if (staleMemoryResult) { job.cachedResult = null; job.result = { ignored: "stale-memory-input" }; }
+  }
   job.payload = null; job.updatedAtMs = NOW(); await DB.put("jobs", job);
   // Closing a helper tab does not delete its DeepSeek conversation from history.
   if (Number.isInteger(job.tabId)) await chrome.tabs.remove(job.tabId).catch(() => {});
   await drainJobQueue();
+  if (staleMemoryResult)
+    await requeueStaleMemoryJob(job).catch((error) => console.warn("过期记忆任务重新排队失败", error));
   if (job.type === "DISTILL" && job.status === "DONE")
     await memoryPlanning(accountId, () => enqueueMemorySessions(accountId)).catch((error) => console.warn("后续会话更新失败", error));
   return { ok: true, status: job.status };
