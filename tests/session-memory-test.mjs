@@ -75,13 +75,13 @@ async function history(id, lines, deferMemoryUpdate = true) {
   await ok("history-observe", { sessionId: id, records, currentMessageId: records.at(-1).messageId, deferMemoryUpdate });
 }
 await session("old-a", 100, ["回答用中文", "我做软件开发"]);
-assert.equal((await jobs()).length, 0, "只有一个会话时没有旧会话");
+assert.equal((await jobs()).length, 2, "唯一会话也立即整理两种记忆");
 await session("old-b", 200, ["项目已经完成"]);
-await session("current", 300, ["当前会话不参与更新"]);
-assert.equal((await jobs()).length, 4, "两个旧会话分别更新两种记忆");
-assert.equal((await jobs()).some(job => job.sourceSessionId === "current"), false);
+await session("current", 300, ["当前会话也参与更新"]);
+assert.equal((await jobs()).length, 6, "每个会话分别更新两种记忆");
+assert.equal((await jobs()).some(job => job.sourceSessionId === "current"), true);
 assert.deepEqual((await jobs()).map(job => [job.sourceSessionId, job.memoryScope]), [
-  ["old-a", "PERSONAL"], ["old-a", "PROJECT"], ["old-b", "PERSONAL"], ["old-b", "PROJECT"],
+  ["old-a", "PERSONAL"], ["old-a", "PROJECT"], ["old-b", "PERSONAL"], ["old-b", "PROJECT"], ["current", "PERSONAL"], ["current", "PROJECT"],
 ]);
 await ok("settings-update", { key: "automationPaused", value: false });
 let job = await running();
@@ -117,8 +117,12 @@ assert.match(job.payload, /项目设置中的目标说明：交付可导出的�
   "项目任务出队时读取当前目标说明");
 assert.doesNotMatch(job.payload, /交付可离线使用的报表/);
 await finish(job, [{ memoryId: progress.memoryId, kind: "进展", content: "已完成" }]);
-assert.equal(await running(), undefined);
-assert.equal((await db.all("memoryTurns", accountId)).length, 4, "每个会话每个范围一个处理版本");
+while (await running()) {
+  const active = await running();
+  const memories = (await db.all("memories", accountId)).filter(row => row.scope === active.memoryScope);
+  await finish(active, memories);
+}
+assert.equal((await db.all("memoryTurns", accountId)).length, 6, "每个会话每个范围一个处理版本");
 const count = (await jobs()).length;
 await history("old-a", ["回答用中文", "我做软件开发"], false);
 assert.equal((await jobs()).length, count, "未变化的完整会话不会重复自动更新");
@@ -163,10 +167,10 @@ await ok("job-queue-update", { jobId: currentOnly.jobId, action: "cancel" });
 await ok("settings-update", { key: "automationPaused", value: true });
 let response = await ok("memory-distill-personal");
 assert.equal(response.started, true);
-assert.deepEqual((await jobs()).filter(job => response.jobIds.includes(job.jobId)).map(job => job.memoryScope), ["PERSONAL", "PERSONAL"]);
+assert.deepEqual((await jobs()).filter(job => response.jobIds.includes(job.jobId)).map(job => job.memoryScope), ["PERSONAL", "PERSONAL", "PERSONAL"]);
 for (const id of response.jobIds) await ok("job-queue-update", { jobId: id, action: "cancel" });
 response = await ok("memory-distill-project", { projectId: project.projectId });
-assert.deepEqual((await jobs()).filter(job => response.jobIds.includes(job.jobId)).map(job => job.memoryScope), ["PROJECT", "PROJECT"]);
+assert.deepEqual((await jobs()).filter(job => response.jobIds.includes(job.jobId)).map(job => job.memoryScope), ["PROJECT", "PROJECT", "PROJECT"]);
 assert.equal((await call("job-queue-update", { jobId: response.jobIds[0], action: "down" })).ok, false, "记忆任务不能打乱顺序");
 for (const id of response.jobIds) await ok("job-queue-update", { jobId: id, action: "cancel" });
 
@@ -179,6 +183,7 @@ assert.equal(failed.status, "FAILED");
 assert.equal((await running()).sourceSessionId, "old-b", "失败任务不会阻塞后面的同范围任务");
 await finish(await running(), [{ memoryId: preference.memoryId, kind: "偏好", content: "使用英文回答" }]);
 assert.equal((await db.get("memories", [accountId, preference.memoryId])).content, "使用英文回答");
+while (await running()) await finish(await running(), [{ memoryId: preference.memoryId, kind: "偏好", content: "使用英文回答" }]);
 await ok("memory-job-retry", { jobId: job.jobId }); job = await running();
 await ok("settings-update", { key: "automationPaused", value: true });
 failCommit = true;
@@ -233,7 +238,7 @@ assert.match((await running()).payload, /当前已有正文 1106 字，其中固
 assert.equal((await finish(await running(), fixedList)).status, "DONE", "完整输出允许保留合法的长手写条目");
 assert.match((await running()).payload, /当前已有正文 1106 字，其中固定正文 1106 字/,
   "过期的后续手动任务自动使用最新固定记忆重新整理");
-await finish(await running(), fixedList);
+while (await running()) await finish(await running(), fixedList);
 assert.equal(await running(), undefined);
 
 // A queued update also re-reads memories changed before it starts, without a user retry.
@@ -251,6 +256,7 @@ assert.notEqual(queuedReplacement.jobId, queuedBeforeEdit.jobId);
 assert.doesNotMatch(queuedReplacement.payload, /优先中文/);
 assert.equal((await db.get("jobs", [storage.accountId, queuedBeforeEdit.jobId])).status, "CANCELLED");
 await finish(queuedReplacement, []);
+while (await running()) await finish(await running(), []);
 assert.equal(await running(), undefined);
 
 // Failed stale jobs from earlier versions are retired when the official list returns.
@@ -311,7 +317,9 @@ assert.equal((await db.all("memories", storage.accountId)).length, 0, "超限结
 await finish(updating, [{ memoryId: updating.compressionInput[0].memoryId, kind: "工作方式", content: "中".repeat(2000) },
   { memoryId: updating.compressionInput[1].memoryId, kind: "资料", content: "文".repeat(2000) }]);
 assert.equal((await ok("snapshot")).personalMemoryBudget.used, 4000);
-assert.equal((await latest()).status, "DONE");
+assert.equal((await db.get("jobs", [storage.accountId, updating.jobId])).status, "DONE");
+
+while (await running()) await finish(await running(), (await db.all("memories", storage.accountId)).filter(row => row.scope === "PERSONAL"));
 
 // Imports/legacy over-limit memories stay intact while a deduplicated COMPACT job runs.
 storage.accountId = "compression-stored";
@@ -413,6 +421,8 @@ assert.equal(resumed.memoryEpoch, 1);
 assert.match(resumed.payload, /身身身身/);
 await finish(resumed, [{ memoryId: resumeFull.memory.memoryId, kind: "资料", content: "身".repeat(1000) }]);
 
+while (await running()) await finish(await running(), (await db.all("memories", storage.accountId)).filter(row => row.scope === "PERSONAL"));
+
 // A helper can appear in the native sidebar before its first progress event arrives.
 storage.accountId = "helper-registration";
 await session("helper-source", 100, ["以后先给结论"], null);
@@ -432,7 +442,7 @@ for (let index = 0; index < 5; index++) {
 assert.equal((await db.get("sessions", [storage.accountId, "helper-native"])).purpose, "MEMORY");
 assert.equal((await db.get("jobs", [storage.accountId, helperJob.jobId])).automationSessionId, "helper-native");
 assert.equal(await db.get("memberships", [storage.accountId, "helper-native"]), null);
-await finish(await running(), []);
+while (await running()) await finish(await running(), []);
 await ok("memory-reconcile");
 assert.equal(await running(), undefined);
 assert.equal((await jobs()).length, beforeHelper, "已完成的同一版本不会因辅助会话同步再次整理");
@@ -450,11 +460,11 @@ await ok("memory-reconcile");
 assert.equal((await jobs()).length, 0, "本地历史缓存不能在收到官方列表前发起请求");
 assert.equal((await call("memory-distill-personal")).ok, false, "手动整理等待官方列表确认");
 await officialList(["listed-old", "listed-current"]);
-assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["listed-old"], "缓存中的已删除会话及未加载页不入队");
+assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["listed-old", "listed-current"], "缓存中的已删除会话及未加载页不入队");
 assert.equal((await db.get("memberships", [storage.accountId, "unloaded"])).projectId, retainedProject.projectId);
 assert.equal((await db.get("sessions", [storage.accountId, "unloaded"])).deleted, false);
 await officialList(["listed-old", "listed-current"]);
-assert.equal((await jobs()).length, 1, "重复官方列表不重建任务");
+assert.equal((await jobs()).length, 2, "重复官方列表不重建任务");
 await ok("settings-update", { key: "automationPaused", value: false });
 const listedJob = await running(); assert.ok(listedJob);
 const helperList = await ok("session-list-observe", { sessions: [{ sessionId: "helper-only", createdAtMs: 500 }] }, listedJob.tabId);
@@ -509,7 +519,7 @@ await session("alpha-current", 300, ["甲项目继续开发"], alpha.projectId);
 await session("beta-current", 400, ["乙项目继续设计"], beta.projectId);
 const projectJobs = (await jobs()).filter(row => row.memoryScope === "PROJECT");
 assert.deepEqual(projectJobs.map(row => [row.sourceSessionId, row.projectId]), [
-  ["alpha-old", alpha.projectId], ["beta-old", beta.projectId], ["alpha-current", alpha.projectId],
+  ["alpha-old", alpha.projectId], ["beta-old", beta.projectId], ["alpha-current", alpha.projectId], ["beta-current", beta.projectId],
 ]);
 await ok("settings-update", { key: "automationPaused", value: false });
 while (await running()) {
@@ -517,7 +527,7 @@ while (await running()) {
   if (active.memoryScope === "PERSONAL") { await finish(active, []); continue; }
   const isAlpha = active.projectId === alpha.projectId;
   assert.match(active.payload, active.sourceSessionId === "alpha-current" ? /甲项目继续开发/ :
-    isAlpha ? /甲项目使用蓝色图表/ : /乙项目使用绿色按钮/);
+    active.sourceSessionId === "beta-current" ? /乙项目继续设计/ : isAlpha ? /甲项目使用蓝色图表/ : /乙项目使用绿色按钮/);
   assert.doesNotMatch(active.payload, isAlpha ? /乙项目使用绿色按钮|乙项目继续设计|设计乙页面/ :
     /甲项目使用蓝色图表|甲项目继续开发|制作甲报表/);
   const existing = (await db.all("memories", storage.accountId)).find(row => row.projectId === active.projectId);
@@ -527,7 +537,35 @@ const isolated = (await db.all("memories", storage.accountId)).filter(row => row
 assert.deepEqual(isolated.map(row => [row.projectId, row.content]).sort(), [
   [alpha.projectId, "甲报表图表已完成"], [beta.projectId, "乙页面按钮已完成"],
 ].sort());
-assert.equal((await db.all("memoryTurns", storage.accountId)).filter(row => row.scope === "PROJECT").length, 3);
+assert.equal((await db.all("memoryTurns", storage.accountId)).filter(row => row.scope === "PROJECT").length, 4);
+
+// Every completed turn updates the latest session without waiting for another chat.
+storage.accountId = "completed-turn-memory";
+await ok("settings-update", { key: "automationPaused", value: true });
+const turnProject = (await ok("project-create", { name: "逐轮记忆" })).project;
+await ok("session-observe", { sessionId: "only-chat", newSession: true, createdAtMs: 100 });
+await ok("membership-move", { sessionId: "only-chat", projectId: turnProject.projectId });
+await officialList();
+assert.equal((await jobs()).length, 0, "空会话不整理");
+const turnHistory = { currentMessageId: 2, records: [
+  { messageId: 1, parentId: null, role: "USER", status: "FINISHED", fragments: [{ type: "REQUEST", content: "项目按周交付" }] },
+  { messageId: 2, parentId: 1, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "确认" }] },
+] };
+await ok("turn-completed", { sessionId: "only-chat", history: turnHistory });
+assert.deepEqual((await jobs()).map(row => row.memoryScope), ["PERSONAL", "PROJECT"]);
+await ok("turn-completed", { sessionId: "only-chat", history: turnHistory });
+assert.equal((await jobs()).length, 2, "同一轮完成事件不重复排队");
+await ok("settings-update", { key: "automationPaused", value: false });
+while (await running()) await finish(await running(), []);
+turnHistory.records.push(
+  { messageId: 3, parentId: 2, role: "USER", status: "FINISHED", fragments: [{ type: "REQUEST", content: "项目改为每日交付" }] },
+  { messageId: 4, parentId: 3, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "已更新" }] },
+);
+turnHistory.currentMessageId = 4;
+await ok("turn-completed", { sessionId: "only-chat", history: turnHistory });
+assert.equal((await jobs()).length, 4, "最新会话内容变化后重新整理两个范围");
+assert.match((await running()).payload, /每日交付/);
+while (await running()) await finish(await running(), []);
 
 // UI reads must survive a stalled tab creation while snapshot maintenance holds the memory chain.
 storage.accountId = "blocked-maintenance";

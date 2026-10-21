@@ -107,7 +107,7 @@ try {
     ${historySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
-      globalThis.fixture={state,renderTree,showLoadingTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync};
+      globalThis.fixture={state,renderTree,showLoadingTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync,registerCreatedSession};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -328,6 +328,13 @@ try {
   await evaluate(`const link=document.createElement('a');link.className='native-row';link.href='/a/chat/s/native-fresh';link.textContent='原生新建会话';
     fixture.state.newSessionIds.add('native-fresh');document.querySelector('#native-history').append(link);fixture.syncVisibleSessions()`);
   await waitFor("原生页面新建会话", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=native-fresh]'))"));
+  await evaluate(`globalThis.beforeCreatedList=fixture.state.officialSessions;
+    fixture.state.snapshot.sessions.push({sessionId:'confirmed-created',purpose:'USER',title:'确认创建的项目会话'});
+    fixture.state.snapshot.memberships.push({sessionId:'confirmed-created',projectId:'p1'});
+    fixture.registerCreatedSession('confirmed-created','确认创建的项目会话');fixture.renderTree()`);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=p1] [data-action=open-session][data-id=confirmed-created]'))"), true,
+    "发送确认后原生列表尚未更新也立即显示项目新会话");
+  assert.equal(await evaluate("fixture.state.officialSessions!==beforeCreatedList"), true, "新增会话触发官方列表重新同步记忆范围");
   await evaluate("fixture.publishList([])");
   assert.equal(await evaluate("document.querySelectorAll('.dtw-session').length"), 0, "官方空列表不显示本地旧会话");
   await evaluate("document.querySelector('#native-history').replaceChildren();fixture.renderTree()");

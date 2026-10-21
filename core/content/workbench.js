@@ -759,6 +759,13 @@
       }
     } finally { state.syncingTimes = false; }
   }
+  function registerCreatedSession(sessionId, title) {
+    if (state.removedSessionIds.has(sessionId)) return;
+    state.newSessionIds.add(sessionId);
+    if (state.officialSessions && !state.officialSessions.has(sessionId)) {
+      state.officialSessions = new Map(state.officialSessions).set(sessionId, { sessionId, title: title || "新对话" });
+    }
+  }
   async function syncVisibleSessions() {
     if (!state.accountId || state.syncingVisible || state.automationRunning || state.rolloverRunning) return;
     const accountId = state.accountId;
@@ -769,7 +776,7 @@
       if (state.officialSessions) for (const [id, row] of native)
         if (!state.removedSessionIds.has(id) && !state.listedSessionIds.has(id) && !state.officialSessions.has(id)
           && (state.newSessionIds.has(id) || state.snapshot?.jobs.some((job) => job.status === "RUNNING"
-            && (job.automationSessionId === id || job.targetSessionId === id)))) { state.officialSessions.set(id, row); state.listedSessionIds.add(id); }
+            && (job.automationSessionId === id || job.targetSessionId === id)))) { state.officialSessions = new Map(state.officialSessions).set(id, row); state.listedSessionIds.add(id); }
       state.listedSessionIds = new Set(native.keys());
       for (const row of sidebarSessions()) {
         if (state.accountId !== accountId) return;
@@ -892,7 +899,7 @@
     if (route !== watch.route) {
       if (route && state.pendingNewConversationAt && Date.now() - state.pendingNewConversationAt < 300000
         && !state.pendingNewKnownIds.has(route)) {
-        state.newSessionIds.add(route);
+        registerCreatedSession(route);
         state.pendingNewConversationAt = 0;
         if (state.pendingNewProjectId) {
           await send("session-observe", { sessionId: route, newSession: true });
@@ -978,6 +985,7 @@
               state.lastHistory = captured; state.lastHistoryAt = Date.now();
               renderMessageInfo();
             }
+            if (!before.sessionId && !before.knownSessionIds.has(id)) registerCreatedSession(id, captured?.title);
             await send("send-status", { jobId, confirmed: true, sessionId: id,
               userMessageId: stored ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
             if (state.rolloverRunning) state.rolloverSessionId = id;
@@ -1300,7 +1308,7 @@
     await refresh();
     try {
       await currentHistory();
-      showToast("项目记忆已开启，仅首条消息带入；正在检查旧会话");
+      showToast("项目记忆已开启，仅首条消息带入；正在检查待整理会话");
     } catch { showToast("项目记忆已开启，仅首条消息带入；历史同步后会继续整理"); }
   }
   async function handleAction(button) {

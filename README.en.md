@@ -31,9 +31,11 @@ Automatic classification is currently disabled; assign chats manually. Memory is
 
 The sidebar's automation group starts collapsed whenever the page opens and shows the latest five chats when expanded. Regular chats outside projects are grouped under “未归类会话” (Unassigned conversations). The display limit does not change retention or cleanup rules.
 
-The sidebar follows DeepSeek's current conversation list and uses locally saved conversation IDs to attach project assignments. Chats deleted while the extension was disabled do not reappear from old caches; new IDs appear under Unassigned conversations. Use “加载更多会话” (Load more conversations) to fetch older official pages. Unloaded chats keep their project assignments, and history caches used for memory processing and continuation do not add sidebar entries.
+The sidebar follows DeepSeek's current conversation list and uses locally saved conversation IDs to attach project assignments. Chats deleted while the extension was disabled do not reappear from old caches; new IDs appear under Unassigned conversations. Use “加载更多会话” (Load more conversations) to fetch older official pages. Unloaded chats keep their project assignments, and history caches used for memory processing and continuation do not add sidebar entries. Newly created chats appear as soon as creation is confirmed, without reloading the page.
 
 Personal memory prioritizes lasting preferences, response style and collaboration habits. Events are retained only when they matter to long-term life, work or future collaboration, summarized in one or two sentences about the key outcome rather than everyday details or full accounts. Later processing and compression also review existing unpinned event entries; user-pinned entries remain protected.
+
+Memory is automatically processed after each completed reply, including the latest chat. Only chats confirmed by the current official list with complete, new or changed history are processed; unchanged chats are not processed again.
 
 With project memory enabled, reaching the context budget sends the current question, applicable memories and recent progress to a successor chat in the same project. The matching original draft is cleared only after receipt is confirmed. While waiting, the extension checks the successor's history and reports a heartbeat every 30 seconds; the task ends only when the reply is explicitly finished. Uncertain outcomes retain the original input for review.
 

@@ -955,9 +955,9 @@ async function historyRequestSlot(accountId, message) {
 
 async function completedTurn(accountId, message) {
   const sessionId = clean(message.sessionId, 100);
-  const observed = await observeSession(accountId, { ...message, newSession: Boolean(message.newSession) });
+  const observed = await observeSession(accountId, { ...message, newSession: Boolean(message.newSession), deferMemoryUpdate: true });
   if (observed.ignored) return observed;
-  if (message.history) await observeHistory(accountId, { sessionId, ...message.history });
+  if (message.history) await observeHistory(accountId, { sessionId, ...message.history, deferMemoryUpdate: true });
   const membership = await DB.get("memberships", key(accountId, sessionId));
   if (message.metric && Number.isFinite(message.metric.submittedAtMs)) {
     const metricId = `${sessionId}:${message.metric.userMessageId ?? ID()}`;
@@ -969,6 +969,7 @@ async function completedTurn(accountId, message) {
   const session = await DB.get("sessions", key(accountId, sessionId));
   if (session?.classificationPending && message.title && membership && !membership.manualLock && !membership.projectId)
     await classify(accountId, sessionId, membership.version);
+  await refreshSessionMemory(accountId);
   return { ok: true };
 }
 

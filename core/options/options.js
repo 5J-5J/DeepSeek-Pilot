@@ -46,7 +46,7 @@
     const project = data.projects.find((item) => item.projectId === job.projectId);
     const range = job.memoryScope === "PERSONAL" ? "个人记忆" : `项目记忆${project?.name ? `（${project.name}）` : ""}`;
     const retry = `${job.attempt > 1 ? `第 ${job.attempt - 1} 次重试` : "首次整理"}${job.savedFromCache ? ` · ${job.status === "QUEUED" ? "等待复用上次结果保存" : "复用上次结果保存"}` : ""}`;
-    return `1 个旧会话 · 更新：${range} · ${retry}`;
+    return `1 个会话 · 更新：${range} · ${retry}`;
   }
   function renderQueue(data) {
     const issue = data.alerts?.issue;

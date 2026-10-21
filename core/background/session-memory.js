@@ -163,15 +163,10 @@ async function collectMemorySessions(accountId, { scope: requestedScope, project
   const cfg = await settings(accountId);
   const sessions = (await DB.all("sessions", accountId)).filter((row) => listed.has(row.sessionId) && row.purpose === "USER" && !row.deleted
     && Number.isFinite(row.createdAtMs)).sort(sessionOrder);
-  const latest = sessions.at(-1);
   const records = await DB.all("memoryTurns", accountId);
   const jobs = await DB.all("jobs", accountId);
   const pending = [];
   for (const row of sessions) {
-    const currentManual = force && row.sessionId === sessionId;
-    const allowLatest = currentManual || jobs.some((job) => job.type === "DISTILL" && job.sourceSessionId === row.sessionId
-      && job.allowLatest && ["QUEUED", "PENDING", "RUNNING", "FAILED", "NEEDS_REVIEW"].includes(job.status));
-    if (row.sessionId === latest?.sessionId && !allowLatest) continue;
     const session = await memorySession(accountId, row.sessionId, cfg);
     if (!session) continue;
     const scopes = []; const forcedScopes = [];
@@ -184,11 +179,10 @@ async function collectMemorySessions(accountId, { scope: requestedScope, project
         && ["QUEUED", "PENDING", "RUNNING", "FAILED", "NEEDS_REVIEW"].includes(job.status));
       const outstandingForced = outstanding.some((job) => job.forced);
       const selected = !sessionId || session.sessionId === sessionId && scope === requestedScope;
-      if (row.sessionId === latest?.sessionId && !forced && !outstandingForced) continue;
       if (record?.fingerprint !== session.fingerprint && (selected || outstanding.length) || forced || outstandingForced) scopes.push(scope);
       if (forced || outstandingForced) forcedScopes.push(scope);
     }
-    if (scopes.length) pending.push({ ...sessionRef(session, scopes), forcedScopes, allowLatest });
+    if (scopes.length) pending.push({ ...sessionRef(session, scopes), forcedScopes, allowLatest: true });
   }
   await saveSessionPending(accountId, pending);
   for (const job of jobs) if (job.type === "DISTILL" && job.sessionVersion
