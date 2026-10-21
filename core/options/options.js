@@ -129,6 +129,8 @@
     $("memoryModeDefault").checked = data.settings.memoryModeDefault;
     $("showPersonalMemory").checked = data.settings.showPersonalMemory;
     $("showProjectMemory").checked = data.settings.showProjectMemory;
+    $("showMessageTokens").checked = data.settings.showMessageTokens;
+    $("showAutomationSessions").checked = data.settings.showAutomationSessions;
     if (data.legacyMigration?.status === "error") notice(`旧版数据迁移失败：${data.legacyMigration.error}`, true);
     const archived = data.projects.filter((project) => project.archived && !project.systemKind)
       .sort((a, b) => (b.updatedAtMs ?? b.createdAtMs ?? 0) - (a.updatedAtMs ?? a.createdAtMs ?? 0)
@@ -205,7 +207,7 @@
     });
     replaceChildren("jobs", ...(rows.length ? rows : ["暂无待核对任务"]));
   }
-  const checkboxSettings = ["memoryModeDefault", "showPersonalMemory", "showProjectMemory"];
+  const checkboxSettings = ["memoryModeDefault", "showPersonalMemory", "showProjectMemory", "showMessageTokens", "showAutomationSessions"];
   for (const key of ["maxContextTokens", "warningRatio", "replyReserveTokens", "memoryStartAtMs", ...checkboxSettings]) {
     $(key).addEventListener("change", async () => {
       const input = $(key);

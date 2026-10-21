@@ -7,6 +7,7 @@ const NOW = () => Date.now();
 const ID = () => crypto.randomUUID();
 const DEFAULTS = { maxContextTokens: 256000, warningRatio: 1, replyReserveTokens: 4000,
   memoryModeDefault: false, showPersonalMemory: false, showProjectMemory: false,
+  showMessageTokens: true, showAutomationSessions: true,
   memoryStartAtMs: null, automationPaused: false };
 const validAccount = (id) => typeof id === "string" && /^[\w-]{6,100}$/.test(id);
 const clean = (value, max = 1000) => String(value ?? "").trim().slice(0, max);
@@ -1449,7 +1450,7 @@ const handlers = {
     if (m.key === "maxContextTokens") value = Math.max(4000, Math.min(1000000, Math.round(Number(value) || DEFAULTS.maxContextTokens)));
     if (m.key === "replyReserveTokens") value = Math.max(0, Math.min(100000, Math.round(Number(value) || 0)));
     if (m.key === "warningRatio") value = Math.max(0.5, Math.min(1, Number(value) || DEFAULTS.warningRatio));
-    if (["memoryModeDefault", "showPersonalMemory", "showProjectMemory", "automationPaused"].includes(m.key)) value = Boolean(value);
+    if (["memoryModeDefault", "showPersonalMemory", "showProjectMemory", "showMessageTokens", "showAutomationSessions", "automationPaused"].includes(m.key)) value = Boolean(value);
     if (m.key === "memoryStartAtMs") {
       if (!Number.isFinite(value) || value <= 0 || value > 8640000000000000) throw new Error("记忆起始时间无效");
       const sessions = new Map((await DB.all("sessions", a)).map((session) => [session.sessionId, session]));

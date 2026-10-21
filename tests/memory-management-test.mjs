@@ -35,6 +35,12 @@ vm.runInContext(source, context);
 const sender = { url: "chrome-extension://test/options/options.html", tab: { id: 1, url: "https://chat.deepseek.com/" } };
 const request = (type, body = {}) => new Promise((resolve) => listener({ type: `dtw:${type}`, accountId, ...body }, sender, resolve));
 const initial = await request("snapshot");
+for (const key of ["showMessageTokens", "showAutomationSessions"]) {
+  assert.equal(initial.settings[key], true, `${key} 默认保持显示`);
+  assert.equal((await request("settings-update", { key, value: false })).value, false);
+  assert.equal((await request("snapshot")).settings[key], false, `${key} 保存后读回`);
+  assert.equal((await request("settings-update", { key, value: true })).value, true);
+}
 assert.ok(initial.settings.memoryStartAtMs >= started && initial.settings.memoryStartAtMs <= Date.now());
 assert.equal((await request("snapshot")).settings.memoryStartAtMs, initial.settings.memoryStartAtMs);
 assert.equal(stored["dtw.firstRunAtMs"], initial.settings.memoryStartAtMs);

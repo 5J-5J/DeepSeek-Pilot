@@ -225,7 +225,7 @@
     const user = DTWHistory.sortSessionsNewestFirst(all.filter((item) => item.purpose === "USER"), nativeOrder);
     const helpers = all.filter((item) => ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose));
     const jobs = DTWHistory.sortSessionsNewestFirst(helpers).slice(0, 5);
-    const groups = state.snapshot.projects.filter((item) => !item.archived && (!item.systemKind || item.systemKind === "AUTOMATION"))
+    const groups = state.snapshot.projects.filter((item) => !item.archived && (!item.systemKind || item.systemKind === "AUTOMATION" && state.snapshot.settings.showAutomationSessions !== false))
       .sort((a, b) => Number(Boolean(a.systemKind)) - Number(Boolean(b.systemKind))
       || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.name.localeCompare(b.name, "zh"))
       .map((project) => ({ id: project.projectId, title: project.name,
@@ -653,7 +653,7 @@
   function renderMessageInfo() {
     const sessionId = currentId();
     if (!state.snapshot) return false;
-    const showMetadata = Boolean(membership(sessionId)?.projectId);
+    const showMetadata = state.snapshot.settings.showMessageTokens !== false && Boolean(membership(sessionId)?.projectId);
     const records = state.lastHistory?.conversationId === sessionId ? state.lastHistory.records : [];
     const byId = new Map(records.map((entry) => [entry.messageId, entry]));
     const branch = []; let id = state.lastHistory?.conversationId === sessionId ? state.lastHistory.currentMessageId : null; const seen = new Set();

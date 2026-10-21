@@ -301,6 +301,12 @@ try {
     {sessionId:'p0-unknown',purpose:'AUTOMATION',automationOrigin:'UNKNOWN',updatedAtMs:99});fixture.publishList()`);
   assert.equal(await evaluate("document.querySelectorAll('[data-group=dtw-automation] .dtw-session').length"), 5);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-session=p0-manual]'))&&Boolean(document.querySelector('[data-session=p0-unknown]'))"), true);
+  await evaluate("fixture.state.snapshot.settings.showAutomationSessions=false;fixture.renderTree()");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-group=dtw-automation]'))"),false,'关闭时整个自动化分组隐藏');
+  assert.equal(await evaluate("document.querySelectorAll('[data-session^=p0-]').length"),0,'隐藏的自动化会话不能出现在其他分组');
+  assert.equal(await evaluate("fixture.state.snapshot.sessions.filter(row=>row.sessionId.startsWith('p0-')).length"),16,'隐藏不删除会话');
+  await evaluate("fixture.state.snapshot.settings.showAutomationSessions=true;fixture.renderTree()");
+  assert.equal(await evaluate("document.querySelectorAll('[data-group=dtw-automation] .dtw-session').length"),5,'重新开启恢复分组');
   await click("collapse", "dtw-automation");
   assert.equal(await evaluate("document.querySelector('[data-group=dtw-automation] .dtw-group-body').inert"), false);
   await click("session-menu", "p0-manual");
@@ -378,6 +384,10 @@ try {
     fixture.state.lastHistory={conversationId:'s1',currentMessageId:4,records};
     const aligned=fixture.renderMessageInfo();const labels=[...host.querySelectorAll('.dtw-message-meta')].map(n=>n.textContent);
     fixture.state.snapshot.settings.showPersonalMemory=true;fixture.renderMessageInfo();
+    fixture.state.snapshot.settings.showMessageTokens=false;fixture.renderMessageInfo();
+    const tokensHidden=host.querySelectorAll('.dtw-message-meta').length===0;
+    fixture.state.snapshot.settings.showMessageTokens=true;fixture.renderMessageInfo();
+    const tokensRestored=host.querySelectorAll('.dtw-message-meta').length===4;
     const toggled=body.textContent.includes('使用中文')&&!body.textContent.includes('完成报表');
     fixture.state.snapshot.settings.showProjectMemory=true;fixture.renderMessageInfo();
     const restored=body.textContent===prompt;
@@ -385,9 +395,9 @@ try {
     nextBody.textContent='另一个分支的问题';fixture.renderMessageInfo();
     const branchProtected=host.querySelectorAll('.dtw-message-meta').length===2;
     host.remove();fixture.state.lastHistory=null;
-    return {hiddenWithoutHistory,aligned,labels,toggled,restored,preserved,branchProtected};
+    return {hiddenWithoutHistory,aligned,labels,toggled,restored,preserved,branchProtected,tokensHidden,tokensRestored};
   })()`);
-  for (const key of ['hiddenWithoutHistory','aligned','toggled','restored','preserved','branchProtected'])
+  for (const key of ['hiddenWithoutHistory','aligned','toggled','restored','preserved','branchProtected','tokensHidden','tokensRestored'])
     assert.equal(attachments[key],true,'附件消息显示：'+key);
   assert.equal(attachments.labels.length,4,'附件不能导致本条和后续消息的时间/token消失');
   assert.match(attachments.labels[3],/本次 100 tokens.*累计 400 tokens/);
@@ -451,6 +461,26 @@ try {
       await evaluate("fixtureFailure='queue';window.dispatchEvent(new CustomEvent('dtw:account-ready',{detail:JSON.stringify({accountId:'startup-account'})}))");
       await waitFor("收到账号通知后恢复插件", () => evaluate("Boolean(document.querySelector('[data-action=open-options]'))"));
     }
+  }
+  const settingsHtml = await fs.readFile(path.join(root,'core/options/options.html'),'utf8');
+  const settingsSource = await fs.readFile(path.join(root,'core/options/options.js'),'utf8');
+  await page.call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/a/chat?settings-display`});
+  await waitFor('设置测试页面',()=>evaluate("location.search==='?settings-display' && Boolean(document.querySelector('#native-history'))"));
+  await evaluate(`document.documentElement.innerHTML=${JSON.stringify(settingsHtml)};
+    globalThis.settingsFixture={ok:true,settings:{memoryStartAtMs:1000,maxContextTokens:256000,warningRatio:1,replyReserveTokens:4000,
+      showMessageTokens:true,showAutomationSessions:true},projects:[],sessions:[],jobs:[]};
+    globalThis.chrome={storage:{local:{get:async()=>({accountId:'display-account'})}},runtime:{sendMessage:async message=>{
+      if(message.type==='dtw:settings-update'){settingsFixture.settings[message.key]=message.value;return {ok:true,value:message.value};}
+      return structuredClone(settingsFixture);
+    }}};
+    ${uiSource}
+    ${settingsSource}`);
+  await waitFor('显示设置加载',()=>evaluate("document.querySelector('#showMessageTokens').checked && document.querySelector('#showAutomationSessions').checked"));
+  for(const key of ['showMessageTokens','showAutomationSessions']) {
+    await evaluate(`document.getElementById('${key}').click()`);
+    await waitFor('关闭显示保存',()=>evaluate(`settingsFixture.settings.${key}===false && !document.getElementById('${key}').disabled`));
+    await evaluate(`document.getElementById('${key}').click()`);
+    await waitFor('开启显示保存',()=>evaluate(`settingsFixture.settings.${key}===true && !document.getElementById('${key}').disabled`));
   }
   console.log(JSON.stringify({ ok: true, checks: "sidebar interactions; production startup with blocked queue, failed/timed-out snapshot and account recovery" }));
 } finally {
