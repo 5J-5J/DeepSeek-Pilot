@@ -383,9 +383,27 @@ if (!currentId() && newChatMemoryEnabled() && !state.pendingNewProjectId) {
 
 仍未处理（保留在报告中供后续排期）：
 
-- 3.3 多账号全局 `accountId`（需要产品层面决定单账号或改造存储键）；已先清理账号切换时的页面级待发送/选择状态。
+- 3.3 多账号全局 `accountId`（需要产品层面决定单账号或改造存储键）；已先清理账号切换时的页面级待发送/选择状态，并在前后台校验自动化/续接任务的账号，避免跨账号写入。
 - 3.4 页面事件通道鉴权（受 MAIN/ISOLATED world 通信模型限制，需要单独设计）。
 - 3.8 旧 `<task_memory>` 注入链（当前无生产者，删除会牵动多个测试，建议单独一次清理提交）。
+- 3.9-7 禁言检测的误判风险：现有测试要求“编辑器被替换成禁言提示”时仍能识别，因此暂未缩小扫描范围；后续可改为只匹配提示容器。
 - `native-ui-test.mjs` 重写、`manage.html` 合并、manifest 权限收紧、3.9 中其余低优先级项。
 
 验证：`empty-send`、`content-send`、`cleanup-content`、`settings-ui`、`sidebar-ui`、`automation-*`、`session-memory`、`session-sync`、`rollover`、`memory-management`、`visible-history`、`history`、`request-body`、`memory-display` 全部通过；`git diff --check` 通过。
+
+---
+
+## 十、修复记录（2026-10-21，第二批）
+
+本批聚焦“后台卡住时不静默失败”和“跨账号不串数据”：
+
+| 原问题 | 修复方式 |
+| --- | --- |
+| 3.9-2 大多数后台消息无超时，后台卡住时发送按钮静默失效 | `send()` 为所有消息加超时：侧边栏快照 10s，完整快照/发送准备 30s，其余 20s；超时后提示并释放 `pendingSend` |
+| 3.9-3 无 `requestId` 的全局错误会打断所有 wait | `waitEvent` 只处理 `requestId` 匹配的错误，MAIN world 启动提示不再导致初始化失败 |
+| 3.3 自动化任务可能在其他账号标签页执行 | 后台下发任务时携带 `accountId`，内容脚本账号不一致时以 `ACCOUNT_MISMATCH` 停止发送/续接 |
+| 3.7 侧边栏每 3s 拉取含全部记忆/指标的快照 | `sidebar-snapshot` 改为轻量读取，不再读取 memories/metrics/memoryHistory |
+| 3.9-6 压缩已失败/取消时仍提示“已自动发起压缩” | 按任务实际状态返回提示：运行中、失败去设置页重试、已取消去重新发起、无可压缩旧记忆；新增测试锁定 |
+
+验证：17 个离线测试（含新增断言）与 `git diff --check` 通过；`sidebar-ui-test` 连续运行时偶尔受本机 Chrome 时序影响，单独运行稳定通过。
+
