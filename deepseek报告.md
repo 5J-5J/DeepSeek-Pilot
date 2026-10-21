@@ -406,4 +406,3 @@ if (!currentId() && newChatMemoryEnabled() && !state.pendingNewProjectId) {
 | 3.9-6 压缩已失败/取消时仍提示“已自动发起压缩” | 按任务实际状态返回提示：运行中、失败去设置页重试、已取消去重新发起、无可压缩旧记忆；新增测试锁定 |
 
 验证：17 个离线测试（含新增断言）与 `git diff --check` 通过；`sidebar-ui-test` 连续运行时偶尔受本机 Chrome 时序影响，单独运行稳定通过。
-
