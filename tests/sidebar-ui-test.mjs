@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "dtw-sidebar-test-"));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const [source, css, historySource, uiSource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js", "ui.js"]
+const [source, css, historySource, uiSource, displaySource] = await Promise.all(["content/workbench.js", "content/workbench.css", "logic/history-core.js", "ui.js", "logic/memory-display.js"]
   .map(file => fs.readFile(path.join(root, "core", file), "utf8")));
 const titles = ["设计IP流量展示图", "G6展示模板比较", "功能分析与架构设计", "梳理推理可视化需求", "未知IP负责人应用成果", "展开显示"];
 const html = `<!doctype html><html lang="zh"><head><meta charset="UTF-8"><style>
@@ -105,9 +105,10 @@ try {
       return {ok:true};
     }},storage:{local:{set:async values=>Object.assign(fixtureStorage,values)}}};
     ${historySource}
+    ${displaySource}
     ${uiSource}
     ${source.replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
-      globalThis.fixture={state,renderTree,showLoadingTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync,registerCreatedSession};
+      globalThis.fixture={state,renderTree,showLoadingTree,toggleGroup,handleAction,renderModal,syncVisibleSessions,titleSync,registerCreatedSession,renderMessageInfo};
       refresh=async()=>renderTree(); syncChangedSessions=async()=>{}; renderMemoryButton=()=>{};
       history=async()=>({records:[]});
       document.body.append(root);
@@ -355,6 +356,41 @@ try {
   assert.equal(await evaluate(`${group}.classList.contains('is-collapsed')`), true, "点击立即收起当前项目树");
   await click("collapse", "p1");
   assert.equal(await evaluate(`${group}.classList.contains('is-collapsed')`), false, "点击立即展开当前项目树");
+  const attachments = await evaluate(`(()=>{
+    history.pushState(null,'','/a/chat/s/s1');
+    const host=document.createElement('section');document.body.append(host);
+    const prompt='<project_memory>\\n## 个人记忆\\n使用中文\\n## 项目记忆：附件测试\\n完成报表\\n</project_memory>\\n\\n<current_question>\\n请分析文件\\n</current_question>';
+    const user=document.createElement('div');user.dataset.messageAuthorRole='user';
+    const file=document.createElement('div');file.textContent='报告.pdf 25 KB';
+    const open=document.createElement('button');open.textContent='打开文件';let clicks=0;open.onclick=()=>clicks++;file.append(open);
+    const body=document.createElement('span');body.textContent=prompt;user.append(file,body);host.append(user);
+    const add=(role,text)=>{const node=document.createElement('div');node.dataset.messageAuthorRole=role;node.textContent=text;host.append(node);return node;};
+    add('assistant','第一轮回答');const next=add('user','');
+    const nextFile=document.createElement('div');nextFile.textContent='数据.csv 12 KB';
+    const nextBody=document.createElement('span');nextBody.textContent='继续分析';next.append(nextFile,nextBody);add('assistant','第二轮回答');
+    fixture.state.snapshot.settings={showPersonalMemory:false,showProjectMemory:false};
+    fixture.state.snapshot.memberships=[{sessionId:'s1',projectId:'p1'}];
+    fixture.state.lastHistory=null;fixture.renderMessageInfo();
+    const hiddenWithoutHistory=body.textContent==='请分析文件';
+    const records=[['USER',prompt],['ASSISTANT','第一轮回答'],['USER','继续分析'],['ASSISTANT','第二轮回答']]
+      .map(([role,content],i)=>({messageId:i+1,parentId:i?i:null,role,status:'FINISHED',insertedAtMs:100000+i,
+        accumulatedTokenUsage:100*(i+1),fragments:[{type:role==='USER'?'REQUEST':'RESPONSE',content}]}));
+    fixture.state.lastHistory={conversationId:'s1',currentMessageId:4,records};
+    const aligned=fixture.renderMessageInfo();const labels=[...host.querySelectorAll('.dtw-message-meta')].map(n=>n.textContent);
+    fixture.state.snapshot.settings.showPersonalMemory=true;fixture.renderMessageInfo();
+    const toggled=body.textContent.includes('使用中文')&&!body.textContent.includes('完成报表');
+    fixture.state.snapshot.settings.showProjectMemory=true;fixture.renderMessageInfo();
+    const restored=body.textContent===prompt;
+    open.click();const preserved=user.firstChild===file&&file.textContent==='报告.pdf 25 KB打开文件'&&nextFile.textContent==='数据.csv 12 KB'&&clicks===1;
+    nextBody.textContent='另一个分支的问题';fixture.renderMessageInfo();
+    const branchProtected=host.querySelectorAll('.dtw-message-meta').length===2;
+    host.remove();fixture.state.lastHistory=null;
+    return {hiddenWithoutHistory,aligned,labels,toggled,restored,preserved,branchProtected};
+  })()`);
+  for (const key of ['hiddenWithoutHistory','aligned','toggled','restored','preserved','branchProtected'])
+    assert.equal(attachments[key],true,'附件消息显示：'+key);
+  assert.equal(attachments.labels.length,4,'附件不能导致本条和后续消息的时间/token消失');
+  assert.match(attachments.labels[3],/本次 100 tokens.*累计 400 tokens/);
   // Exercise the production entry point as well as the isolated rendering helpers above.
   for (const failure of ["queue", "snapshot-error", "snapshot-timeout"]) {
     await page.call("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/a/chat?startup=${failure}` });

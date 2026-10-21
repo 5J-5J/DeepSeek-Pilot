@@ -632,12 +632,23 @@
     for (const part of parts) part.node.nodeValue = part.display;
     visibleUserMessages.set(node, { messageId: record.messageId, original, shown, parts });
   }
-  function userMessageText(node) {
+  function userMessageText(node, record) {
     const prior = visibleUserMessages.get(node);
     if (prior?.parts.every((part) => node.contains(part.node) && part.node.nodeValue === part.display)) return prior.original;
     const clone = node.cloneNode(true);
     clone.querySelectorAll("button,[role=button],.dtw-owned").forEach((item) => item.remove());
-    return clone.textContent.trim();
+    const candidates = [clone, ...clone.querySelectorAll("*")].map((item) => item.textContent.trim()).filter(Boolean);
+    const question = (text) => DTWMemoryDisplay.visibleText(text, false, false) ?? text;
+    const normalize = (text) => text.replace(/\s+/g, "");
+    if (record?.role === "USER") {
+      const expected = normalize(question(DTWHistory.fragmentText(record)));
+      const matched = candidates.find((text) => normalize(question(text)) === expected);
+      if (matched !== undefined) return matched;
+    }
+    // Attachment cards share the bubble, but are not part of its request text.
+    const memory = candidates.filter((text) => DTWMemoryDisplay.visibleText(text, false, false) !== null)
+      .sort((a, b) => a.length - b.length)[0];
+    return memory ?? clone.textContent.trim();
   }
   function renderMessageInfo() {
     const sessionId = currentId();
@@ -654,7 +665,7 @@
     let aligned = true;
     for (let index = 0; index < nodes.length; index++) {
       const node = nodes[index]; const role = messageRole(node); let record = branch[index];
-      const original = role === "USER" ? userMessageText(node) : "";
+      const original = role === "USER" ? userMessageText(node, record) : "";
       const question = (text) => DTWMemoryDisplay.visibleText(text, false, false) ?? text;
       aligned &&= record?.role === role && (role !== "USER" || normalize(question(original)) === normalize(question(DTWHistory.fragmentText(record))));
       if (!aligned) record = null;
