@@ -16,14 +16,19 @@ const end = '  start().catch((error) => console.warn("[DeepSeek Pilot]", error))
 assert.ok(source.includes(end));
 vm.runInContext(source.replace(end, `
   let historyCalls = 0;
-  globalThis.fixture = { state, syncRoute, rememberHistory, historyCalls: () => historyCalls };
+  const fetched = [];
+  let renderResult = true;
+  globalThis.fixture = { state, syncRoute, rememberHistory, fetched,
+    historyCalls: () => historyCalls, setRender: (value) => { renderResult = value; } };
   renderTree = () => {};
   renderMemoryButton = () => {};
-  renderMessageInfo = () => true;
+  renderMessageInfo = () => renderResult;
   currentHistory = async () => { historyCalls++; return null; };
+  history = async (sessionId) => { fetched.push(sessionId); return { conversationId: sessionId, records: [] }; };
 `), context);
 
-const { state, syncRoute, rememberHistory, historyCalls } = context.fixture;
+const { state, syncRoute, rememberHistory, fetched, historyCalls, setRender } = context.fixture;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 state.snapshot = { settings: { showMessageTokens: true }, memberships: [], sessions: [], projects: [], memories: [], jobs: [] };
 state.accountId = "cache-account";
 
@@ -45,4 +50,14 @@ syncRoute();
 assert.equal(state.lastHistory, null, "没有缓存的会话不显示旧会话的数据");
 assert.equal(state.messageInfoPending, true);
 
-console.log(JSON.stringify({ ok: true, checks: "recent history cache renders on route switch" }));
+// Metadata enabled but labels still missing: fetch the conversation once instead of waiting for the idle fallback.
+state.snapshot.memberships = [{ sessionId: "project-ok", projectId: "p1" }, { sessionId: "project-stale", projectId: "p1" }];
+location.href = "https://chat.deepseek.com/chat/s/project-ok";
+setRender(true); syncRoute(); await wait(250);
+assert.deepEqual([...fetched], [], "标签已渲染时不再重复请求");
+
+location.href = "https://chat.deepseek.com/chat/s/project-stale";
+setRender(false); syncRoute(); await wait(250);
+assert.deepEqual([...fetched], ["project-stale"], "标签缺失时立即补读历史");
+
+console.log(JSON.stringify({ ok: true, checks: "recent history cache renders on route switch; missing labels fetch once" }));

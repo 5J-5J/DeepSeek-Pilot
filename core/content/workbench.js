@@ -865,19 +865,21 @@
     document.querySelectorAll(".dtw-message-meta").forEach((node) => node.remove());
     renderTree(); renderMemoryButton();
     if (!route || !state.accountId || state.automationRunning || state.rolloverRunning) return;
-    currentHistory().then((cachedHistory) => { if (!cachedHistory && currentId() === route) recoverHistory(route); }).catch(() => {});
+    currentHistory().catch(() => {});
+    recoverHistory(route);
   }
-  // The native page normally fetches a conversation's history itself. Wait briefly for that
+  // The native page normally fetches a conversation's history itself. Wait a moment for that
   // observation, then read once more so token/time labels do not wait for the idle fallback.
   function recoverHistory(route) {
     if (state.snapshot?.settings.showMessageTokens === false || !membership(route)?.projectId) return;
     setTimeout(() => {
-      if (currentId() !== route || state.lastHistory?.conversationId === route
-        || state.automationRunning || state.rolloverRunning) return;
+      if (currentId() !== route || state.automationRunning || state.rolloverRunning) return;
+      // Labels can be missing even when a local history exists (stale branch or DOM timing).
+      if (renderMessageInfo()) { state.messageInfoPending = false; return; }
       history(route, { allowEmpty: true, userAction: false })
         .then((captured) => saveObservedHistory(route, captured))
         .catch(() => {});
-    }, 1000);
+    }, 150);
   }
   async function syncChangedSessions() {
     if (!state.snapshot || state.syncingChanges || state.automationRunning || state.rolloverRunning
