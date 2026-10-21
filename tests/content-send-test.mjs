@@ -77,4 +77,16 @@ listeners.get("keydown")(event(editor));
 await settle();
 assert.equal(helper.prevented, false);
 assert.equal(requests.length, beforeHelper, "自动化会话不注入个人记忆");
+
+// “默认带入项目记忆”不再强制新会话先选项目：未选项目时直接按首条消息准备发送。
+location.href = "https://chat.deepseek.com/a/chat";
+context.fixture.state.snapshot.settings.memoryModeDefault = true;
+context.fixture.state.pendingNewProjectId = "";
+const defaultSend = event(editor);
+listeners.get("keydown")(defaultSend);
+await settle();
+assert.equal(defaultSend.prevented, true);
+assert.equal(context.fixture.state.pickerSessionId, "", "不应为新会话强制打开项目选择框");
+assert.equal(requests.at(-1).type, "dtw:prepare-send");
+assert.equal(requests.at(-1).newChatProjectId, "");
 console.log(JSON.stringify({ ok: true }));

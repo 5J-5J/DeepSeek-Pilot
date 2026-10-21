@@ -17,7 +17,7 @@ const context = vm.createContext({ window, URL, CustomEvent, crypto: globalThis.
   fixtureResult: async () => { if (remoteError) throw new Error(remoteError); },
 });
 vm.runInContext(source.replace('  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));', '  const delay = fixtureDelay;')
-  .replace('  start().catch((error) => console.warn("[DeepSeek 项目工作台]", error));', `
+  .replace('  start().catch((error) => console.warn("[DeepSeek Pilot]", error));', `
   globalThis.fixture = { state };
   requireSendAllowed = () => {};
   waitEvent = fixtureResult;

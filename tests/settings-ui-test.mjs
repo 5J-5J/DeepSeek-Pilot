@@ -112,7 +112,7 @@ ${backgroundSource}
   assert.equal(await evaluate(page, "Boolean(document.querySelector('#distillEveryTurns'))"), false);
   assert.equal(await evaluate(page, "document.querySelector('#distill').hidden"), false, "没有待处理会话时仍保留主动更新入口");
   assert.equal(await evaluate(page, "document.querySelectorAll('#automationQueue .row').length"), 3);
-  assert.match(await evaluate(page, "document.querySelector('#automationQueue .queue-batch').textContent"), /1 个旧会话 · 更新：项目记忆（界面测试项目） · 第 1 次重试/);
+  assert.match(await evaluate(page, "document.querySelector('#automationQueue .queue-batch').textContent"), /1 个会话 · 更新：项目记忆（界面测试项目） · 第 1 次重试/);
   assert.equal(await evaluate(page, "document.querySelector('#pauseQueue').textContent"), "继续队列");
   assert.equal(await evaluate(page, "document.querySelectorAll('.memory-entry button').length"), 0);
   assert.equal(await evaluate(page, "document.querySelectorAll('.memory-entry input').length"), 0);

@@ -22,6 +22,7 @@ node tests/automation-cleanup-test.mjs
 node tests/request-body-test.mjs
 node tests/memory-display-test.mjs
 node tests/rollover-test.mjs
+node tests/empty-send-test.mjs
 git diff --check
 ```
 

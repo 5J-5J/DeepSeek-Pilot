@@ -6,10 +6,10 @@
   const root = document.createElement("div");
   root.id = "dtw-root";
   const NEW_CHAT = "__dtw_new_chat__";
-  const state = { accountId: "", snapshot: null, knownAtStart: new Set(), newSessionIds: new Set(), pendingNewConversationAt: 0, pendingNewKnownIds: new Set(),
+  const state = { accountId: "", snapshot: null, newSessionIds: new Set(), pendingNewConversationAt: 0, pendingNewKnownIds: new Set(),
     importedIds: new Set(), syncingVisible: false, syncingTimes: false, sessionTimes: new Map(), reportedTips: new Map(), titles: new Map(),
     officialSessions: null, listedSessionIds: new Set(), removedSessionIds: new Set(), hasMoreSessions: false, loadingSessions: false,
-    collapsed: new Set(["dtw-automation"]), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "", newChatMemoryOff: false,
+    collapsed: new Set(["dtw-automation"]), pickerSessionId: "", enableMemoryAfterMove: "", pendingNewProjectId: "",
     menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
     bypassSend: false, pendingSend: false,
@@ -190,9 +190,6 @@
   }
   function projects() { return (state.snapshot?.projects || []).filter((item) => !item.archived && !item.systemKind).sort((a, b) => a.name.localeCompare(b.name, "zh")); }
   function membership(sessionId) { return state.snapshot?.memberships.find((item) => item.sessionId === sessionId) || null; }
-  function newChatMemoryEnabled() {
-    return Boolean(state.pendingNewProjectId || (state.snapshot?.settings.memoryModeDefault && !state.newChatMemoryOff));
-  }
   function automationSession(sessionId) { return state.snapshot?.sessions.some((item) => item.sessionId === sessionId
     && ["CLASSIFY", "MEMORY", "AUTOMATION"].includes(item.purpose)); }
   function nativeSessionRows() {
@@ -469,7 +466,7 @@
     if (button.previousElementSibling !== anchor) anchor.after(button);
     const row = membership(currentId());
     const isAutomation = automationSession(currentId());
-    const enabled = isAutomation ? false : currentId() ? Boolean(row?.memoryModeEnabled) : newChatMemoryEnabled();
+    const enabled = isAutomation ? false : currentId() ? Boolean(row?.memoryModeEnabled) : Boolean(state.pendingNewProjectId);
     const exemplar = [thinking, search].find((node) => nativeToggleIsOn(node) === enabled);
     if (exemplar) {
       button.className = `${exemplar.className} dtw-memory-button`;
@@ -694,15 +691,23 @@
     document.querySelectorAll(".dtw-visible-memory").forEach((panel) => { if (!memoryPanels.has(panel)) panel.remove(); });
     return records.length > 0 && nodes.length === branch.length && aligned;
   }
+  let displaySyncScheduled = false;
   function observeMessageDisplay() {
     const observer = new MutationObserver((mutations) => {
-      if (!state.snapshot) return;
+      if (!state.snapshot || displaySyncScheduled) return;
       const nodes = messageNodes();
       if (!mutations.some((mutation) => nodes.some((node) => node.contains(mutation.target)
         || [...mutation.addedNodes, ...mutation.removedNodes].some((added) => added.contains(node))))) return;
-      // Reapply visibility before paint when React restores a message after editing.
-      renderMemoryEditors();
-      if (renderMessageInfo()) state.messageInfoPending = false;
+      const apply = () => {
+        if (!state.snapshot) return;
+        renderMemoryEditors();
+        if (renderMessageInfo()) state.messageInfoPending = false;
+      };
+      // Message edits must be restored before paint; streaming answers only need one pass per frame.
+      if (!isGenerating()) { apply(); return; }
+      if (displaySyncScheduled) return;
+      displaySyncScheduled = true;
+      requestAnimationFrame(() => { displaySyncScheduled = false; apply(); });
     });
     observer.observe(document.body, { childList: true, characterData: true, subtree: true });
     return observer;
@@ -921,7 +926,6 @@
           await refresh();
         }
       }
-      state.newChatMemoryOff = false;
       const submitted = Boolean(state.submittedAtMs && (state.submittedRoute === route
         || !state.submittedRoute && state.newSessionIds.has(route)));
       Object.assign(watch, { route, count: 0, text: "", since: Date.now(), generating: submitted, primed: submitted });
@@ -1032,9 +1036,13 @@
       if (sentNode) renderUserMessage(sentNode, { messageId: `pending-${jobId}`,
         fragments: [{ type: "REQUEST", content: prompt }] });
       const okay = await confirmUserMessage(jobId, prompt, before);
-      if (!okay) showToast("发送结果不明，原始草稿已保存在作业记录中，请核对会话", 6000);
+      if (!okay) {
+        state.submittedAtMs = null; state.submittedRoute = ""; state.firstOutputAtMs = null;
+        showToast("发送结果不明，原始草稿已保存在作业记录中，请核对会话", 6000);
+      }
       return okay;
     } catch (error) {
+      state.submittedAtMs = null; state.submittedRoute = ""; state.firstOutputAtMs = null;
       setEditor(editor, original);
       await send("send-status", { jobId, error: error.message }).catch(() => {});
       showToast(`发送未确认：${error.message}`, 6000);
@@ -1047,12 +1055,8 @@
     const rawInput = editorText(editor).trim();
     try {
       requireSendAllowed();
-      if (!currentId() && newChatMemoryEnabled() && !state.pendingNewProjectId) {
-        state.pickerSessionId = NEW_CHAT; renderModal(); return;
-      }
       if (!currentId() && state.pendingNewProjectId) markPendingNewConversation();
       const prepared = await send("prepare-send", { sessionId: currentId(), newChatProjectId: state.pendingNewProjectId, rawInput });
-      if (prepared.chooseProject) { state.pickerSessionId = currentId(); renderModal(); return; }
       if (prepared.native) { await submit(editor); return; }
       if (prepared.rollover) {
         const started = await send("rollover-start", { jobId: prepared.jobId });
@@ -1403,7 +1407,7 @@
         const entry = [...document.querySelectorAll("span")].find((node) => node.textContent.trim() === "开启新对话");
         if (!entry) throw new Error("找不到 DeepSeek 新对话入口，请刷新页面后重试");
         entry.click();
-        state.pendingNewProjectId = id; state.newChatMemoryOff = false;
+        state.pendingNewProjectId = id;
         toggleGroup("__projects__", false); toggleGroup(id, false);
         renderMemoryButton();
       }
@@ -1415,7 +1419,6 @@
           const sessionId = state.pickerSessionId;
           if (sessionId === NEW_CHAT) {
             state.pendingNewProjectId = created.project.projectId;
-            state.newChatMemoryOff = false;
             showToast("项目记忆已开启，发送首条消息后自动归入项目");
           } else {
             await move(sessionId, created.project.projectId);
@@ -1429,7 +1432,6 @@
         const sessionId = state.pickerSessionId;
         if (sessionId === NEW_CHAT) {
           state.pendingNewProjectId = id;
-          state.newChatMemoryOff = false;
           showToast("项目记忆已开启，发送首条消息后自动归入项目");
         } else {
           await move(sessionId, id || null);
@@ -1462,10 +1464,10 @@
         const sessionId = currentId();
         if (automationSession(sessionId)) { showToast("自动化会话仅用于收纳，不使用项目记忆"); return; }
         if (!sessionId) {
-          if (newChatMemoryEnabled()) {
-            state.pendingNewProjectId = ""; state.newChatMemoryOff = true;
-            renderMemoryButton(); showToast("项目记忆已关闭");
-          } else { state.newChatMemoryOff = false; state.pickerSessionId = NEW_CHAT; renderModal(); }
+          if (state.pendingNewProjectId) {
+            state.pendingNewProjectId = "";
+            renderMemoryButton(); showToast("已取消项目记忆；本条消息仍会按首条规则带入个人记忆");
+          } else { state.pickerSessionId = NEW_CHAT; renderModal(); }
           return;
         }
         let row = membership(sessionId);
@@ -1625,8 +1627,11 @@
     try {
       if (state.accountId && state.accountId !== accountId) {
         state.snapshot = null; state.sessionTimes.clear(); state.dirtySessions.clear(); state.importedIds.clear(); restoreNativeSessions();
-        state.newSessionIds.clear(); state.pendingNewConversationAt = 0;
+        state.newSessionIds.clear(); state.pendingNewConversationAt = 0; state.pendingNewKnownIds.clear();
         state.officialSessions = null; state.listedSessionIds.clear(); state.removedSessionIds.clear(); state.titles.clear(); state.hasMoreSessions = false;
+        state.pendingNewProjectId = ""; state.pickerSessionId = ""; state.enableMemoryAfterMove = "";
+        state.selectedSessions = null; state.submittedAtMs = null; state.submittedRoute = ""; state.firstOutputAtMs = null;
+        closeMenu(); renderModal();
       }
       state.accountId = accountId; state.startupFailed = false;
       currentRequestIssue();
@@ -1684,7 +1689,6 @@
     window.addEventListener("popstate", scheduleUiSync);
     window.navigation?.addEventListener("currententrychange", scheduleUiSync);
     showLoadingTree();
-    state.knownAtStart = new Set([...nativeLinks().map((item) => idFromHref(item.href)), currentId()].filter(Boolean));
     setInterval(async () => {
       currentRequestIssue();
       if (!chrome.runtime?.id || !state.accountId || !state.snapshot || state.startupFailed || state.syncingUi) return;

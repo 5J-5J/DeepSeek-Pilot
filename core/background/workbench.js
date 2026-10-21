@@ -448,10 +448,11 @@ async function observeSession(accountId, message, sender = {}) {
   if (previous?.deleted) return { ok: true, ignored: true };
   if (!previous && !message.newSession && !message.loadedHistory) return { ok: true, ignored: true };
   const route = sender.tab?.url?.match(/\/chat\/s\/([^/?#]+)/)?.[1];
-  if (route === sessionId) {
+  if (route === sessionId || !previous) {
+    // The helper tab registers its own chat; other tabs may see it in the native list first.
     const job = (await DB.all("jobs", accountId)).find((entry) => ["CLASSIFY", "DISTILL", "COMPACT"].includes(entry.type)
-      && entry.status === "RUNNING" && entry.tabId === sender.tab.id && entry.sourceSessionId !== sessionId
-      && (!entry.automationSessionId || entry.automationSessionId === sessionId));
+      && entry.status === "RUNNING" && (entry.automationSessionId === sessionId
+        || route === sessionId && entry.tabId === sender.tab?.id && entry.sourceSessionId !== sessionId));
     if (job) {
       // Register helper chats before they can shift the latest ordinary session and start a replay.
       await recordAutomationSession(accountId, job, sessionId);
@@ -528,9 +529,11 @@ async function observeHistory(accountId, message) {
   if (root) session.createdAtMs = root.insertedAtMs;
   session.historyObserved = true;
   session.hasUserMessage ||= records.some((record) => record.role === "USER");
+  const previousMessages = new Map((await DB.by("messages", "bySession", [accountId, sessionId]))
+    .map((row) => [row.messageId, row]));
   for (const record of records) {
     if (!Number.isInteger(record.messageId) || !["USER", "ASSISTANT"].includes(record.role)) continue;
-    const previous = await DB.get("messages", [accountId, sessionId, record.messageId]);
+    const previous = previousMessages.get(record.messageId);
     const fragments = (Array.isArray(record.fragments) ? record.fragments : []).slice(0, 10).map((fragment) => ({
       fragmentId: Number.isInteger(fragment.fragmentId) ? fragment.fragmentId : null,
       type: clean(fragment.type, 20), content: clean(fragment.content, 50000),
@@ -1251,15 +1254,15 @@ async function prepareSend(accountId, message, sender) {
   const newChatProjectId = !sessionId ? clean(message.newChatProjectId, 100) : "";
   const projectEnabled = Boolean(membership?.memoryModeEnabled || newChatProjectId);
   const projectId = projectEnabled ? membership?.projectId || newChatProjectId : null;
-  if (projectEnabled && !projectId) return { ok: true, chooseProject: true };
+  const rawInput = String(message.rawInput ?? "").trim();
+  // No text to inject into (e.g. an attachment-only first message): keep the native send.
+  if (!rawInput) return { ok: true, native: true };
   const project = projectId ? await DB.get("projects", key(accountId, projectId)) : null;
   if (projectId && (!project || project.archived || project.systemKind)) throw new Error("项目不可用，请重新选择项目");
   const firstMessage = !sessionId || Boolean(session?.historyObserved && !session.hasUserMessage
     && session.currentMessageId == null && session.lastKnownMessageId == null);
   const block = firstMessage ? await sendMemoryBlock(accountId, project) : "";
   if (!block && !project) return { ok: true, native: true };
-  const rawInput = String(message.rawInput ?? "").trim();
-  if (!rawInput) throw new Error("输入为空");
   const branch = await currentBranch(accountId, sessionId);
   const tip = branch.at(-1);
   const cfg = await settings(accountId);
@@ -1315,7 +1318,9 @@ async function sendStatus(accountId, message) {
     }
     if (job.type === "ROLLOVER") {
       await observeSession(accountId, { sessionId: target, newSession: true, title: clean(message.title, 160) });
-      const membership = await DB.get("memberships", key(accountId, target));
+      const membership = await DB.get("memberships", key(accountId, target))
+        || { accountId, sessionId: target, projectId: null, source: "NONE", manualLock: false,
+          memoryModeEnabled: false, updatedAtMs: NOW(), version: 0 };
       membership.projectId = job.projectId; membership.source = "ROLLOVER"; membership.memoryModeEnabled = true;
       membership.version += 1; membership.updatedAtMs = NOW(); await DB.put("memberships", membership);
       const project = await DB.get("projects", key(accountId, job.projectId));
@@ -1362,6 +1367,31 @@ async function markDeleted(accountId, message) {
       await DB.put("projects", { ...project, currentSessionId: null, updatedAtMs: NOW() });
   }
   return { ok: true };
+}
+
+const JOB_RETENTION_MS = 30 * 86400000;
+const METRIC_RETENTION_MS = 90 * 86400000;
+const DELETED_SESSION_RETENTION_MS = 7 * 86400000;
+async function pruneStoredData(accountId) {
+  const marker = await DB.get("settings", key(accountId, "lastPruneAtMs"));
+  if (marker && NOW() - marker.value < 86400000) return;
+  const old = (value, limit) => Number.isFinite(value) && NOW() - value > limit;
+  for (const job of await DB.all("jobs")) {
+    if (["DONE", "CANCELLED", "DISMISSED"].includes(job.status) && old(job.updatedAtMs, JOB_RETENTION_MS))
+      await DB.remove("jobs", key(job.accountId, job.jobId));
+  }
+  for (const metric of await DB.all("metrics")) {
+    if (old(metric.completedAtMs, METRIC_RETENTION_MS))
+      await DB.remove("metrics", key(metric.accountId, metric.metricId));
+  }
+  for (const session of (await DB.all("sessions")).filter((row) => row.accountId === accountId && row.deleted
+    && old(row.updatedAtMs, DELETED_SESSION_RETENTION_MS))) {
+    for (const record of await DB.by("messages", "bySession", [session.accountId, session.sessionId]))
+      await DB.remove("messages", [session.accountId, session.sessionId, record.messageId]);
+    if (await DB.get("memberships", key(session.accountId, session.sessionId)))
+      await DB.remove("memberships", key(session.accountId, session.sessionId));
+  }
+  await DB.put("settings", { accountId, key: "lastPruneAtMs", value: NOW() });
 }
 
 async function pruneAutomationSessions(accountId, message, sender) {
@@ -1411,6 +1441,7 @@ const handlers = {
   "history-request-slot": historyRequestSlot,
   snapshot: (a) => mutateMemories(a, (recovery) => snapshot(a, recovery)),
   "sidebar-snapshot": (a) => readSnapshot(a),
+  "queue-snapshot": (a) => readSnapshot(a),
   "open-options": async () => { await chrome.runtime.openOptionsPage(); return { ok: true }; },
   "project-create": createProject,
   "project-update": updateProject,
@@ -1508,11 +1539,17 @@ chrome.storage.onChanged?.addListener((changes, areaName) => {
   if (areaName === "local" && changes.accountId)
     drainJobQueue().catch((error) => console.warn("账号切换后队列恢复失败", error));
 });
+function pruneForCurrentAccount() {
+  chrome.storage.local.get("accountId").then(({ accountId }) =>
+    accountId && pruneStoredData(accountId)).catch((error) => console.warn("本地历史清理失败", error));
+}
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("dtw-job-check", { periodInMinutes: 1 });
   drainJobQueue().catch((error) => console.warn("任务队列恢复失败", error));
+  pruneForCurrentAccount();
 });
 chrome.runtime.onStartup?.addListener(() => {
   chrome.alarms.create("dtw-job-check", { periodInMinutes: 1 });
   drainJobQueue().catch((error) => console.warn("任务队列恢复失败", error));
+  pruneForCurrentAccount();
 });

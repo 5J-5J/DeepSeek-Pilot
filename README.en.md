@@ -27,7 +27,7 @@ The current version is **0.9.0, an early development release**, with these capab
 | Task management | Serial queue, pause, failure notices, retries and draft preservation |
 | Cleanup protection | Distinguish generated auxiliary chats from manually collected chats; protect unknown-origin chats and chats linked to running tasks |
 
-Automatic classification is currently disabled; assign chats manually. Memory is included only in the first message of regular chats. Project memory also requires a selected project and the switch enabled beforehand; enabling it later does not inject it retroactively. Chat display settings separately control personal memory, project memory, message token/timestamp rows, and the sidebar automation group; the latter two are enabled by default. Display switches affect visibility, not memory transmission or learning. For attachments sent with text, attachment cards remain intact while timestamps, token counts and memory visibility match the message body.
+Automatic classification is currently disabled; assign chats manually. Memory is included only in the first message of regular chats. Project memory also requires a selected project and the switch enabled beforehand; enabling it later does not inject it retroactively. New chats never force a project selection; without one they send normally under the personal-memory rule. A message with only attachments and no text is sent natively without memory injection. Chat display settings separately control personal memory, project memory, token/timestamp rows in project chats, and the sidebar automation group; the latter two are enabled by default. Display switches affect visibility, not memory transmission or learning. For attachments sent with text, attachment cards remain intact while timestamps, token counts and memory visibility match the message body.
 
 The sidebar's automation group starts collapsed whenever the page opens and shows the latest five chats when expanded. Regular chats outside projects are grouped under “未归类会话” (Unassigned conversations). The display limit does not change retention or cleanup rules.
 
@@ -73,6 +73,6 @@ If Chrome cannot find the manifest, select the `core/` folder containing `manife
 
 ### Usage notes
 
-Memories and synchronized data are stored locally, but injection, processing and compression send relevant content to DeepSeek. The extension retains the latest 10 generated auxiliary chats and deletes eligible older ones from DeepSeek; manually collected chats are protected. Deleting a project does not delete remote chats. Clearing extension data removes local memories and snapshots.
+Memories and synchronized data are stored locally, but injection, processing and compression send relevant content to DeepSeek. The extension retains the latest 10 generated auxiliary chats and deletes eligible older ones from DeepSeek; manually collected chats are protected. Locally, completed jobs older than 30 days, timing metrics older than 90 days, and messages/memberships of deleted chats older than 7 days are pruned automatically. Deleting a project does not delete remote chats. Clearing extension data removes local memories and snapshots.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification instructions. No open-source license has been selected for this repository yet.

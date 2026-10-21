@@ -361,3 +361,31 @@ if (!currentId() && newChatMemoryEnabled() && !state.pendingNewProjectId) {
 - **数据安全**：记忆写入的多重版本/指纹/快照校验明显高于同类插件，删除意图和固定条目保护考虑周到。
 - **主要短板**：测试基线未跟随重构；异常输入（附件-only）和少数空值/超时路径没有兜底；长会话与长期使用的性能/存储没有上限策略。
 - **上线建议**：在修复 3.1、3.2、3.5 前不宜宣称“完整功能已验证”；修完后建议用真实账号做一次手动回归（新建项目 → 首条消息带附件 → 记忆整理 → 长对话续接 → 自动化清理）。
+
+---
+
+## 九、修复记录（2026-10-21）
+
+本批次以“减少记忆管理动作、消除发送阻断”为优先，已完成：
+
+| 原问题 | 修复方式 |
+| --- | --- |
+| 3.1 附件-only 首条消息被拦截 | `prepareSend` 在生成记忆块前检查文本，空文本直接回落原生发送；新增 `tests/empty-send-test.mjs` |
+| 3.2 两个测试字符串过期 | 同步 `settings-ui-test`、`cleanup-content-test` 到当前实现 |
+| 3.6 新会话强制选择项目、无项目时无法发送 | 移除发送前的强制选择框；未选项目时按个人记忆规则直接发送。`memoryModeDefault` 只作用于已归属/之后移入项目的会话，按钮状态改为反映当前是否已选项目 |
+| 3.5 本地历史无限增长 | 浏览器启动/扩展更新时清理：30 天前已完成作业、90 天前耗时指标、7 天前已删除会话的消息与归属记录 |
+| 3.7 流式期间重复渲染 | 消息编辑仍同步恢复；生成中改为每帧最多一次；设置页 5s 队列轮询改用轻量 `queue-snapshot`；`observeHistory` 改为一次读取旧消息；删除未使用的 `knownAtStart` |
+| 3.9-1 发送失败指标残留 | 失败/未确认时清空 `submittedAtMs`、`submittedRoute`、`firstOutputAtMs` |
+| 3.9-4 续接 membership 空值 | 缺失时创建 membership，避免 `TypeError` |
+| 3.9-5 其他标签页抢先登记辅助会话 | 新会话观察时同时按运行中作业的 `automationSessionId` 识别辅助会话 |
+| 3.9-8 元数据仅项目会话显示 | 设置页帮助文案明确“项目会话” |
+| 3.9-12 `knownAtStart` 死状态 | 删除 |
+
+仍未处理（保留在报告中供后续排期）：
+
+- 3.3 多账号全局 `accountId`（需要产品层面决定单账号或改造存储键）；已先清理账号切换时的页面级待发送/选择状态。
+- 3.4 页面事件通道鉴权（受 MAIN/ISOLATED world 通信模型限制，需要单独设计）。
+- 3.8 旧 `<task_memory>` 注入链（当前无生产者，删除会牵动多个测试，建议单独一次清理提交）。
+- `native-ui-test.mjs` 重写、`manage.html` 合并、manifest 权限收紧、3.9 中其余低优先级项。
+
+验证：`empty-send`、`content-send`、`cleanup-content`、`settings-ui`、`sidebar-ui`、`automation-*`、`session-memory`、`session-sync`、`rollover`、`memory-management`、`visible-history`、`history`、`request-body`、`memory-display` 全部通过；`git diff --check` 通过。

@@ -108,7 +108,8 @@
     queueLoading = true;
     try {
       const target = accountId;
-      const data = await call("snapshot");
+      // Queue polling only needs a read; the full snapshot runs migrations and recovery.
+      const data = await call("queue-snapshot");
       if (target === accountId) { renderQueue(data); renderReviewJobs(data); }
     } finally { queueLoading = false; }
   }
