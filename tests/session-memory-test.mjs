@@ -497,6 +497,38 @@ assert.deepEqual((await jobs()).map(row => row.sourceSessionId), ["manual-target
 await ok("settings-update", { key: "automationPaused", value: false });
 await finish(await running(), []);
 assert.equal((await jobs()).length, 1, "单会话手动整理完成后也不会提交其他尚未整理的会话");
+
+// Separate projects keep their conversations and distilled memories isolated.
+storage.accountId = "two-project-memory";
+await ok("settings-update", { key: "automationPaused", value: true });
+const alpha = (await ok("project-create", { name: "项目甲", goalShort: "制作甲报表" })).project;
+const beta = (await ok("project-create", { name: "项目乙", goalShort: "设计乙页面" })).project;
+await session("alpha-old", 100, ["甲项目使用蓝色图表"], alpha.projectId);
+await session("beta-old", 200, ["乙项目使用绿色按钮"], beta.projectId);
+await session("alpha-current", 300, ["甲项目继续开发"], alpha.projectId);
+await session("beta-current", 400, ["乙项目继续设计"], beta.projectId);
+const projectJobs = (await jobs()).filter(row => row.memoryScope === "PROJECT");
+assert.deepEqual(projectJobs.map(row => [row.sourceSessionId, row.projectId]), [
+  ["alpha-old", alpha.projectId], ["beta-old", beta.projectId], ["alpha-current", alpha.projectId],
+]);
+await ok("settings-update", { key: "automationPaused", value: false });
+while (await running()) {
+  const active = await running();
+  if (active.memoryScope === "PERSONAL") { await finish(active, []); continue; }
+  const isAlpha = active.projectId === alpha.projectId;
+  assert.match(active.payload, active.sourceSessionId === "alpha-current" ? /甲项目继续开发/ :
+    isAlpha ? /甲项目使用蓝色图表/ : /乙项目使用绿色按钮/);
+  assert.doesNotMatch(active.payload, isAlpha ? /乙项目使用绿色按钮|乙项目继续设计|设计乙页面/ :
+    /甲项目使用蓝色图表|甲项目继续开发|制作甲报表/);
+  const existing = (await db.all("memories", storage.accountId)).find(row => row.projectId === active.projectId);
+  await finish(active, [{ memoryId: existing?.memoryId || "", kind: "进展", content: isAlpha ? "甲报表图表已完成" : "乙页面按钮已完成" }]);
+}
+const isolated = (await db.all("memories", storage.accountId)).filter(row => row.scope === "PROJECT");
+assert.deepEqual(isolated.map(row => [row.projectId, row.content]).sort(), [
+  [alpha.projectId, "甲报表图表已完成"], [beta.projectId, "乙页面按钮已完成"],
+].sort());
+assert.equal((await db.all("memoryTurns", storage.accountId)).filter(row => row.scope === "PROJECT").length, 3);
+
 // UI reads must survive a stalled tab creation while snapshot maintenance holds the memory chain.
 storage.accountId = "blocked-maintenance";
 await db.put("projects", { accountId: storage.accountId, projectId: "visible-project", name: "仍可读取的项目" });
