@@ -49,10 +49,11 @@
     if (!state.accountId) throw new Error("无法确认 DeepSeek 账号");
     const response = chrome.runtime.sendMessage({ type: `dtw:${type}`, accountId: state.accountId, ...body });
     let timer; let result;
+    const timeoutMs = type === "sidebar-snapshot" ? 10000 : type === "snapshot" || type === "prepare-send" ? 30000 : 20000;
     try {
-      result = type === "sidebar-snapshot" ? await Promise.race([response, new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("插件后台读取超时，请重新加载插件并刷新页面")), 10000);
-      })]) : await response;
+      result = await Promise.race([response, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`插件后台响应超时（${type}），请重新加载插件并刷新页面`)), timeoutMs);
+      })]);
     } finally { clearTimeout(timer); }
     if (result == null) throw new Error(`插件后台未响应「${type}」。请在扩展管理页重新加载插件，然后刷新 DeepSeek 页面`);
     if (result?.ok === false) throw new Error(result.error || "操作失败");
@@ -63,7 +64,8 @@
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => finish(new Error("DSW 页面响应超时")), ms);
       const good = (event) => { const detail = parse(event); if (detail?.requestId === requestId) finish(null, detail); };
-      const bad = (event) => { const detail = parse(event); if (!detail?.requestId || detail.requestId === requestId) finish(Object.assign(new Error(detail?.error || "DSW 请求失败"), { code: detail?.code })); };
+      // Errors without a requestId are global notices (e.g. MAIN world still booting); they must not abort an unrelated wait.
+      const bad = (event) => { const detail = parse(event); if (detail?.requestId && detail.requestId === requestId) finish(Object.assign(new Error(detail.error || "DSW 请求失败"), { code: detail?.code })); };
       function finish(error, detail) {
         clearTimeout(timer); window.removeEventListener(name, good); window.removeEventListener("dtw:network-error", bad);
         if (error) reject(error); else resolve(detail);
@@ -1566,12 +1568,18 @@
     if (message?.type === "dtw:automation") {
       const issue = currentRequestIssue();
       if (issue) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
+      if (message.accountId && state.accountId && message.accountId !== state.accountId) {
+        reply({ ok: false, code: "ACCOUNT_MISMATCH", error: "页面账号与任务账号不一致，已停止自动发送" }); return false;
+      }
       reply({ ok: Boolean(state.accountId), code: state.accountId ? undefined : "NOT_READY" });
       if (state.accountId && !state.automationRunning) runAutomation(message); return false;
     }
     if (message?.type === "dtw:rollover") {
       const issue = currentRequestIssue();
       if (issue) { reply({ ok: false, code: issue.code, error: issue.message }); return false; }
+      if (message.accountId && state.accountId && message.accountId !== state.accountId) {
+        reply({ ok: false, code: "ACCOUNT_MISMATCH", error: "页面账号与任务账号不一致，已停止续接" }); return false;
+      }
       reply({ ok: Boolean(state.accountId), code: state.accountId ? undefined : "NOT_READY" });
       if (state.accountId && !state.rolloverRunning && !state.automationRunning) runRollover(message); return false;
     }

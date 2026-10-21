@@ -295,12 +295,13 @@ async function snapshot(accountId, recovery) {
 }
 
 // UI reads must not wait for memory writes, migrations or tab creation.
-async function readSnapshot(accountId, recovery = { restored: 0, unavailable: 0 }, legacyMigration) {
+// `light` is for the sidebar's 3s poll: it never reads memories, metrics or snapshots.
+async function readSnapshot(accountId, recovery = { restored: 0, unavailable: 0 }, legacyMigration, light = false) {
   const [projects, sessions, memberships, memories, jobs, cfg, metrics] = await Promise.all([
     DB.all("projects", accountId), DB.all("sessions", accountId), DB.all("memberships", accountId),
-    DB.all("memories", accountId), DB.all("jobs", accountId), settings(accountId), DB.all("metrics", accountId),
+    light ? [] : DB.all("memories", accountId), DB.all("jobs", accountId), settings(accountId), light ? [] : DB.all("metrics", accountId),
   ]);
-  const history = DB.checkMemoryHistory ? await DB.get("memoryHistory", accountId) : null;
+  const history = !light && DB.checkMemoryHistory ? await DB.get("memoryHistory", accountId) : null;
   const issue = activeRequestIssue(cfg.requestIssue);
   const unfinished = jobs.filter((job) => ["FAILED", "NEEDS_REVIEW"].includes(job.status));
   const alerts = { count: unfinished.length + Number(Boolean(issue)), unfinished: unfinished.length, issue };
@@ -311,8 +312,8 @@ async function readSnapshot(accountId, recovery = { restored: 0, unavailable: 0 
   return { ok: true, projects, sessions, memberships, memories: memories.filter((memory) => !DB.validMemory || DB.validMemory(memory)),
     memoryListRequired: !officialMemorySessions.has(accountId),
     alerts,
-    memoryRecovery: { ...recovery, snapshotCount: history?.snapshots?.length || 0, lastRecovery: history?.lastRecovery || null },
-    personalMemoryBudget: { used: personalMemoryCharacters(memories.filter((item) => item.scope === "PERSONAL" && item.state === "ACTIVE")),
+    memoryRecovery: light ? null : { ...recovery, snapshotCount: history?.snapshots?.length || 0, lastRecovery: history?.lastRecovery || null },
+    personalMemoryBudget: light ? null : { used: personalMemoryCharacters(memories.filter((item) => item.scope === "PERSONAL" && item.state === "ACTIVE")),
       limit: PERSONAL_MEMORY_CHARACTER_LIMIT },
     jobs: jobs.filter((job) => ["QUEUED", "PENDING", "RUNNING", "FAILED", "NEEDS_REVIEW"].includes(job.status)
       || NOW() - job.updatedAtMs < 7 * 86400000), settings: cfg, metrics, legacyMigration };
@@ -631,6 +632,16 @@ function memoryPlainText(value) {
 
 const personalMemoryCharacters = (memories) => memories.reduce((total, memory) => total + Array.from(memory.content).length, 0);
 
+function compressionHint(compression, target) {
+  if (["QUEUED", "PENDING", "RUNNING"].includes(compression.status))
+    return `已自动发起压缩，完成后可重新保存${target}`;
+  if (["FAILED", "NEEDS_REVIEW"].includes(compression.status))
+    return `自动压缩上次未成功，请在设置页重试压缩后保存${target}`;
+  if (["CANCELLED", "DISMISSED"].includes(compression.status))
+    return `上次自动压缩未完成，请在设置页重新发起压缩后保存${target}`;
+  return `当前没有可压缩的旧记忆，请精简${target}`;
+}
+
 async function enforcePersonalMemoryBudget(accountId) {
   const active = (await DB.all("memories", accountId)).filter((item) => item.scope === "PERSONAL" && item.state === "ACTIVE");
   if (personalMemoryCharacters(active) >= PERSONAL_MEMORY_CHARACTER_LIMIT) await enqueuePersonalCompression(accountId);
@@ -654,7 +665,7 @@ async function dispatchQueuedJob(job) {
       if (issue) throw Object.assign(new Error(issue.message), { code: issue.code });
       try {
         const result = await send(job.tabId, { type: job.type === "ROLLOVER" ? "dtw:rollover" : "dtw:automation",
-          jobId: job.jobId, prompt: job.payload });
+          accountId: job.accountId, jobId: job.jobId, prompt: job.payload });
         if (result?.ok) return;
         if (result?.code && result.code !== "NOT_READY") throw Object.assign(new Error(result.error || "插件请求已停止"), { code: result.code });
       } catch (error) { if (error.code) throw error; /* Content script may not have loaded yet. */ }
@@ -1087,8 +1098,7 @@ async function memorySave(accountId, message) {
       && entry.state === "ACTIVE" && entry.memoryId !== memory.memoryId);
     if (personalMemoryCharacters([...active, memory]) > PERSONAL_MEMORY_CHARACTER_LIMIT) {
       const compression = await enqueuePersonalCompression(accountId);
-      throw new Error(compression.started ? `个人记忆超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，已自动发起压缩；完成后请重新保存此条目`
-        : `此条目超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，当前没有已保存的个人记忆可压缩，请精简此条目`);
+      throw new Error(`个人记忆超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，${compressionHint(compression, "此条目")}`);
     }
   }
   memory.budgetLimited = false;
@@ -1160,8 +1170,7 @@ async function memorySaveCategory(accountId, message) {
   ].filter((memory) => memory.scope === "PERSONAL" && memory.state === "ACTIVE")) <= PERSONAL_MEMORY_CHARACTER_LIMIT;
   if (!withinBudget(all)) {
     const compression = await enqueuePersonalCompression(accountId);
-    throw new Error(compression.started ? `个人记忆超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，已自动发起压缩；完成后请重新保存此类别`
-      : `个人记忆超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，当前没有可启动的压缩任务，请精简此类别或重试压缩`);
+    throw new Error(`个人记忆超过 ${PERSONAL_MEMORY_CHARACTER_LIMIT} 字，${compressionHint(compression, "此类别")}`);
   }
   const epoch = await memoryEpoch(accountId, scope, projectId);
   await DB.saveMemoryCategory(accountId, category, expected, updates, removed,
@@ -1440,7 +1449,7 @@ const handlers = {
   },
   "history-request-slot": historyRequestSlot,
   snapshot: (a) => mutateMemories(a, (recovery) => snapshot(a, recovery)),
-  "sidebar-snapshot": (a) => readSnapshot(a),
+  "sidebar-snapshot": (a) => readSnapshot(a, undefined, undefined, true),
   "queue-snapshot": (a) => readSnapshot(a),
   "open-options": async () => { await chrome.runtime.openOptionsPage(); return { ok: true }; },
   "project-create": createProject,

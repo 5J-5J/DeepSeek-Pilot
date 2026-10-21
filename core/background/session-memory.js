@@ -16,13 +16,13 @@ async function enqueuePersonalCompression(accountId) {
   const existing = (await DB.all("jobs", accountId)).find((job) => job.type === "COMPACT" && job.compressionFingerprint === fingerprint
     && (["QUEUED", "PENDING", "RUNNING", "FAILED", "NEEDS_REVIEW", "DISMISSED"].includes(job.status)
       || job.status === "CANCELLED" && job.result?.ignored === "user-cancelled"));
-  if (existing) return { started: !["CANCELLED", "DISMISSED"].includes(existing.status), jobId: existing.jobId };
+  if (existing) return { started: ["QUEUED", "PENDING", "RUNNING"].includes(existing.status), status: existing.status, jobId: existing.jobId };
   const job = { accountId, jobId: ID(), type: "COMPACT", memoryScope: "PERSONAL", projectId: null,
     status: "QUEUED", memorySnapshot: snapshot, compressionInput: input, compressionFingerprint: fingerprint,
     memoryEpoch: await memoryEpoch(accountId, "PERSONAL", null), attempt: 1,
     payload: null, tabId: null, automationSessionId: null, createdAtMs: NOW(), updatedAtMs: NOW() };
   await DB.put("jobs", job); await drainJobQueue();
-  return { started: true, jobId: job.jobId };
+  return { started: true, status: "QUEUED", jobId: job.jobId };
 }
 async function finishPersonalCompression(accountId, job, result) {
   if (!Array.isArray(result?.memories)) throw new Error(result?.error || "个人记忆压缩 JSON 无效，原记忆已保留");

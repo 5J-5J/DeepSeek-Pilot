@@ -339,6 +339,10 @@ assert.equal((await compactJobs()).at(-1).status, "FAILED", "固定条目不能�
 assert.equal((await db.get("memories", [storage.accountId, "fixed-a"])).content.length, 2700);
 await ok("snapshot");
 assert.equal((await compactJobs()).length, 1, "失败任务不会自动循环调用模型");
+// Over-budget saves must not claim a new compression started when the previous one failed.
+const blockedSave = await call("memory-save", { memory: { scope: "PERSONAL", kind: "偏好", content: "丙".repeat(100) } });
+assert.equal(blockedSave.ok, false);
+assert.match(blockedSave.error, /自动压缩上次未成功，请在设置页重试压缩后保存此条目/);
 await ok("memory-job-retry", { jobId: compact.jobId }); compact = (await compactJobs()).at(-1);
 await finish(compact, [{ memoryId: "fixed-a", kind: "资料", content: "甲".repeat(2700) },
   { memoryId: "fixed-b", kind: "偏好", content: "乙".repeat(2500) }]);
