@@ -13,7 +13,7 @@
     menu: null, selectedSessions: null, nativeActionRunning: false, historyRecovery: new Set(), toastTimer: 0, rendering: false, startupFailed: false, uiRoute: "", messageInfoPending: false,
     automationRunning: false, rolloverRunning: false, syncingChanges: false, dirtySessions: new Set(), observedHistories: new Map(), networkIssue: null,
     bypassSend: false, pendingSend: false,
-    submittedAtMs: null, submittedRoute: "", firstOutputAtMs: null, lastHistory: null, lastHistoryAt: 0,
+    submittedAtMs: null, submittedRoute: "", firstOutputAtMs: null, lastHistory: null, lastHistoryAt: 0, historyCache: new Map(),
     turn: { route: "", count: 0, text: "", since: 0, generating: false, primed: false } };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const idFromHref = (href) => { try { return new URL(href, location.href).pathname.match(/\/chat\/s\/([^/?#]+)/)?.[1] || ""; } catch { return ""; } };
@@ -827,6 +827,17 @@
       await send("session-observe", { sessionId: id, title, newSession: false }).catch(() => {});
     }
   }
+  const HISTORY_CACHE_LIMIT = 8;
+  // Keep recent conversations in memory so switching back renders token/time labels without a round-trip.
+  function rememberHistory(captured) {
+    if (!captured?.conversationId) return;
+    state.historyCache.delete(captured.conversationId);
+    state.historyCache.set(captured.conversationId, { history: captured, at: Date.now() });
+    while (state.historyCache.size > HISTORY_CACHE_LIMIT) state.historyCache.delete(state.historyCache.keys().next().value);
+    if (currentId() !== captured.conversationId) return;
+    state.lastHistory = captured; state.lastHistoryAt = Date.now();
+    if (renderMessageInfo()) state.messageInfoPending = false;
+  }
   async function currentHistory(force = false) {
     const id = currentId();
     if (!id || (!force && state.lastHistory?.conversationId === id && Date.now() - state.lastHistoryAt < 12000)) return state.lastHistory;
@@ -835,8 +846,7 @@
     else result = (await send("session-history", { sessionId: id })).history || (state.lastHistory?.conversationId === id ? state.lastHistory : null);
     if (!result) return null;
     if (currentId() !== id) return result;
-    state.lastHistory = result; state.lastHistoryAt = Date.now();
-    if (renderMessageInfo()) state.messageInfoPending = false;
+    rememberHistory(result);
     if (state.snapshot?.sessions.some((entry) => entry.sessionId === id)) {
       await send("history-observe", { sessionId: id, records: result.records, currentMessageId: result.currentMessageId,
         title: result.title, updatedAtMs: result.updatedAtMs });
@@ -848,11 +858,26 @@
     const route = currentId();
     if (route === state.uiRoute) return;
     state.uiRoute = route;
-    if (state.lastHistory?.conversationId !== route) { state.lastHistory = null; state.lastHistoryAt = 0; }
-    state.messageInfoPending = Boolean(route);
+    const cached = route ? state.historyCache.get(route) : null;
+    state.lastHistory = cached?.history || null;
+    state.lastHistoryAt = cached?.at || 0;
+    state.messageInfoPending = Boolean(route && !cached);
     document.querySelectorAll(".dtw-message-meta").forEach((node) => node.remove());
     renderTree(); renderMemoryButton();
-    if (route && state.accountId && !state.automationRunning && !state.rolloverRunning) currentHistory().catch(() => {});
+    if (!route || !state.accountId || state.automationRunning || state.rolloverRunning) return;
+    currentHistory().then((cachedHistory) => { if (!cachedHistory && currentId() === route) recoverHistory(route); }).catch(() => {});
+  }
+  // The native page normally fetches a conversation's history itself. Wait briefly for that
+  // observation, then read once more so token/time labels do not wait for the idle fallback.
+  function recoverHistory(route) {
+    if (state.snapshot?.settings.showMessageTokens === false || !membership(route)?.projectId) return;
+    setTimeout(() => {
+      if (currentId() !== route || state.lastHistory?.conversationId === route
+        || state.automationRunning || state.rolloverRunning) return;
+      history(route, { allowEmpty: true, userAction: false })
+        .then((captured) => saveObservedHistory(route, captured))
+        .catch(() => {});
+    }, 1000);
   }
   async function syncChangedSessions() {
     if (!state.snapshot || state.syncingChanges || state.automationRunning || state.rolloverRunning
@@ -874,7 +899,7 @@
     } finally { state.syncingChanges = false; }
   }
   async function saveObservedHistory(id, captured) {
-    if (currentId() === id) { state.lastHistory = captured; state.lastHistoryAt = Date.now(); renderMessageInfo(); }
+    rememberHistory(captured);
     await send("history-observe", { sessionId: id, records: captured.records, currentMessageId: captured.currentMessageId,
       title: captured.title, updatedAtMs: captured.updatedAtMs });
   }
@@ -882,6 +907,8 @@
     if (!state.accountId || detail.accountId !== state.accountId) { state.observedHistories.set(detail.sessionId, detail); return; }
     try {
       const captured = DTWHistory.parseHistoryResponse(detail.data, detail.sessionId, { allowEmpty: true });
+      // Render from memory first; background persistence can queue behind memory writes.
+      rememberHistory(captured);
       if (state.automationRunning && state.automationJobId && detail.sessionId === currentId()
         && (!state.automationSessionId || detail.sessionId === state.automationSessionId))
         await send("automation-progress", { jobId: state.automationJobId, phase: "WAITING_REPLY", automationSessionId: detail.sessionId });
@@ -998,10 +1025,7 @@
               return normalized(content.textContent);
             });
           if (stored || onPage) {
-            if (stored && currentId() === id) {
-              state.lastHistory = captured; state.lastHistoryAt = Date.now();
-              renderMessageInfo();
-            }
+            if (stored && currentId() === id) rememberHistory(captured);
             if (!before.sessionId && !before.knownSessionIds.has(id)) registerCreatedSession(id, captured?.title);
             await send("send-status", { jobId, confirmed: true, sessionId: id,
               userMessageId: stored ? user.messageId : undefined, title: captured?.title, waitForReply: state.rolloverRunning });
@@ -1635,6 +1659,7 @@
     try {
       if (state.accountId && state.accountId !== accountId) {
         state.snapshot = null; state.sessionTimes.clear(); state.dirtySessions.clear(); state.importedIds.clear(); restoreNativeSessions();
+        state.historyCache.clear(); state.lastHistory = null; state.lastHistoryAt = 0;
         state.newSessionIds.clear(); state.pendingNewConversationAt = 0; state.pendingNewKnownIds.clear();
         state.officialSessions = null; state.listedSessionIds.clear(); state.removedSessionIds.clear(); state.titles.clear(); state.hasMoreSessions = false;
         state.pendingNewProjectId = ""; state.pickerSessionId = ""; state.enableMemoryAfterMove = "";
