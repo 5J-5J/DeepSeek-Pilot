@@ -1,4 +1,4 @@
-# DeepSeek Pilot 代码检查报告
+# DeepSeek Pilot 代码检查报告 测试
 
 - 检查日期：2026-10-21
 - 版本基线：`df400a1`（0.9.0，Chrome MV3）
