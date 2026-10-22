@@ -211,7 +211,7 @@ try {
   assert.equal(await evaluate("fixture.state.menu?.kind"), "session");
   assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false, "打开插件菜单不触发原生菜单");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.dtw-menu button')].map(b=>b.textContent.trim())"),
-    ["打开会话", "重命名", "置顶", "分享", "多选", "移到项目", "从项目中移除", "删除会话"]);
+    ["打开会话", "重命名", "置顶", "分享", "多选", "从项目中移除", "删除会话"]);
   await checkMenuPosition(".dtw-menu", "session-menu", "s1");
   await evaluate("fixture.state.snapshot.sessions.find(s=>s.sessionId==='s1').title='菜单打开时更新';fixture.renderTree()");
   assert.equal(await evaluate("fixture.state.menu.anchor===document.querySelector('[data-action=session-menu][data-id=s1]')"),true);
@@ -241,16 +241,17 @@ try {
   await pointerClick("session-menu","s1");await click("session-rename","s1");
   await waitFor("原生交互不展示弹层",()=>evaluate("!fixture.state.nativeActionRunning"));
   assert.equal(await evaluate("fixtureFlashes"),0);
-  await pointerClick("session-menu","s1");
-  await click("open-picker", "s1");
+  await pointerClick("session-menu","s7");
+  await click("open-picker", "s7");
   assert.equal(await evaluate("Boolean(document.querySelector('.ds-dropdown-menu'))"), false);
   await click("move-to", "p2");
-  await waitFor("会话归类", () => evaluate("Boolean(document.querySelector('[data-group=\"p2\"] [data-session=\"s1\"]'))"));
+  await waitFor("未归类会话移入项目", () => evaluate("Boolean(document.querySelector('[data-group=\"p2\"] [data-session=\"s7\"]'))"));
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu'))"), false);
-  await click("session-menu", "s1");
+  await click("session-menu", "s7");
   await waitFor("从项目移除入口", () => evaluate("Boolean(document.querySelector('[data-action=\"remove-from-project\"]'))"));
-  await click("remove-from-project", "s1");
-  await waitFor("移到未归类", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=\"s1\"]'))"));
+  assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu [data-action=\"open-picker\"]'))"), false, "归入项目后不提供跨项目移动入口");
+  await click("remove-from-project", "s7");
+  await waitFor("移到未归类", () => evaluate("Boolean(document.querySelector('.dtw-unassigned [data-session=\"s7\"]'))"));
   await click("session-menu", "helper");
   assert.equal(await evaluate("Boolean(document.querySelector('.dtw-menu [data-action=\"automation-unmark\"]'))"), true, "无可见原生行时保留插件菜单");
   await checkMenuPosition(".dtw-menu","session-menu","helper");

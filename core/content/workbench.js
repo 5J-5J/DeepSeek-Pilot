@@ -1276,7 +1276,7 @@
     const selected = sidebarSessions().find((item) => item.sessionId === id);
     const row = membership(id);
     if (selected?.purpose === "AUTOMATION") return menuItem("automation-unmark", id, "恢复为普通会话", "back");
-    return `${menuItem("open-picker", id, "移到项目", "move")}${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : ""}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
+    return `${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : menuItem("open-picker", id, "移到项目", "move")}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
   }
   async function nativeSessionAction(id, action, title) {
     if (state.nativeActionRunning) return;
