@@ -8,7 +8,8 @@ const startCall = '  start().catch((error) => console.warn("[DeepSeek Pilot]", e
 assert.ok(source.includes(startCall));
 
 async function run({ finishAt = Infinity, generating = false, hiddenAnswer = false, historyError = null, changing = false,
-  routeMode = "normal", appliedSessionId = "helper", cachedOther = false, generatingUntil = finishAt, switchAt = 30000 } = {}) {
+  routeMode = "normal", appliedSessionId = "helper", cachedOther = false, generatingUntil = finishAt, switchAt = 30000,
+  deadlineMs = Infinity } = {}) {
   const started = 1000000;
   let clock = started;
   let submitted = false;
@@ -64,7 +65,7 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
   `), context);
   if (cachedOther) context.fixture.state.lastHistory = { conversationId: "other", currentMessageId: 8,
     records: [{ messageId: 8, role: "ASSISTANT", status: "FINISHED", fragments: [{ type: "RESPONSE", content: "另一会话的回答" }] }] };
-  await context.fixture.runAutomation({ jobId: "job", prompt: "模拟整理请求" });
+  await context.fixture.runAutomation({ jobId: "job", prompt: "模拟整理请求", deadlineAtMs: started + deadlineMs });
   assert.equal(context.fixture.state.automationRunning, false);
   assert.equal(context.fixture.state.automationJobId, null);
   assert.equal(context.fixture.state.automationSessionId, "");
@@ -113,4 +114,8 @@ result = await run({ finishAt: 60000, appliedSessionId: "" });
 assert.equal(result.raw, '{"memories":[]}', "旧网络事件未提供 ID 时绑定首次出现的路由");
 result = await run({ historyError: "HTTP_ERROR" });
 assert.match(result.error, /自动化会话：helper.*历史读取失败：模拟历史请求失败/);
+result = await run({ finishAt: 60000, generating: true, deadlineMs: 30000 });
+assert.equal(result.elapsed, 30000, "页面等待也遵守后台下发的执行期限，生成活动不会续期");
+assert.match(result.error, /30 秒.*跳过/);
+assert.equal(result.raw, undefined);
 console.log("Automation reply checks passed: five-second history checks, missing/misleading generation controls, unfinished-history protection, route changes, slow replies and stalls.");
