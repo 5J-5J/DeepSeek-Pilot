@@ -106,32 +106,23 @@
     const queue = scope === "PERSONAL" ? data.projects.find((item) => item.systemKind === "PERSONAL") : project;
     const pending = scope === "PERSONAL" ? (queue?.pendingSessionRefs || []).filter((ref) => !ref.scopes || ref.scopes.includes("PERSONAL")).length
       : queue?.pendingSessionRefs?.length || 0;
-    const projectSessions = data.memberships.filter((item) => item.projectId === projectId);
-    const enabledSessions = projectSessions.filter((item) => item.memoryModeEnabled).length;
-    const personalSessions = data.sessions.filter((item) => item.purpose === "USER" && !item.deleted).length;
-    const includesPersonal = (job) => job.memoryScope === "PERSONAL";
-    const lastPersonalJob = data.jobs.filter((job) => ["DISTILL", "COMPACT"].includes(job.type) && includesPersonal(job))
-      .sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0];
-    const personalResult = lastPersonalJob?.status === "DONE"
-      ? ` · 上次整理${(lastPersonalJob.result?.personal ?? lastPersonalJob.result?.count) ? `写入 ${lastPersonalJob.result.personal ?? lastPersonalJob.result.count} 条个人记忆` : "没有新增个人事实"}`
-      : ["FAILED", "NEEDS_REVIEW"].includes(lastPersonalJob?.status) ? " · 上次整理未完成（见设置页）" : "";
     const activeJobs = data.jobs.filter((job) => ["DISTILL", "COMPACT"].includes(job.type)
-      && (scope === "PERSONAL" ? includesPersonal(job) : job.projectId === projectId)
+      && (scope === "PERSONAL" ? job.memoryScope === "PERSONAL" : job.projectId === projectId)
       && ["QUEUED", "PENDING", "RUNNING"].includes(job.status));
     const running = activeJobs.length > 0;
     const progress = activeJobs.some((job) => job.status === "RUNNING")
       ? activeJobs.some((job) => job.status === "RUNNING" && (job.type === "COMPACT" || job.compressionInput)) ? "正在压缩个人记忆" : "正在整理" : "排队中";
     const budget = data.personalMemoryBudget;
     const budgetHint = budget && Number.isFinite(budget.used) && Number.isFinite(budget.limit)
-      ? `记忆预算 ${budget.used}/${budget.limit} 字（按记忆正文字符计）` : "记忆预算暂不可用，请重新加载插件";
+      ? `记忆预算 ${budget.used}/${budget.limit} 字` : "记忆预算暂不可用，请重新加载插件";
     const details = scope === "PERSONAL"
-      ? `普通会话 ${personalSessions} 个（含未归项目）· 旧会话按顺序更新 · 待更新 ${pending} 个会话${running ? ` · ${progress}` : ""} · ${budgetHint}${personalResult}`
-      : `项目内 ${projectSessions.length} 个会话参与自动整理 · 仅更新本项目旧会话，使用独立项目提示词 · 待更新 ${pending} 个会话${running ? ` · ${progress}` : ""} · ${enabledSessions} 个会话发送时带入记忆`;
+      ? `保存跨会话通用的个人偏好与工作习惯。${budgetHint}。`
+      : "保存本项目的目标、决定和进展，供后续会话参考。";
     const protection = data.memoryRecovery;
     const recoveryHint = protection
-      ? `本地保留最近 ${protection.snapshotCount} 份记忆快照，自动检查并补回缺失或损坏的条目，不重新调用模型。主动删除会记录删除意图，并清除快照中的对应内容；手动补充或导入可重新保留。${protection.lastRecovery ? `最近在 ${new Date(protection.lastRecovery.recoveredAtMs).toLocaleString()} 恢复 ${protection.lastRecovery.restored} 条。` : ""}${protection.unavailable ? `有 ${protection.unavailable} 条因来源或项目已变化而未恢复。` : ""}浏览器本地数据整体被清除时，快照也会丢失。`
+      ? `本地保留最近 ${protection.snapshotCount} 份记忆快照，可自动恢复异常丢失的条目。${protection.unavailable ? `${protection.unavailable} 条因来源变化未恢复。` : ""}`
       : "";
-    DTWUI.setHelp($("scopeDetails"), `${details}。记忆按类别整理，类别内优先显示固定和生效条目。可编辑整个类别，批量删除位于「更多」中。${recoveryHint}`);
+    DTWUI.setHelp($("scopeDetails"), `${details}可按类别编辑，固定条目受保护，批量删除在「更多」中。${recoveryHint}`);
     replaceChildren("scopeSummary", `${selected().length} 条记忆 · 待更新 ${pending} 个会话${running ? ` · ${progress}` : ""}`);
     $("distill").hidden = false;
     $("distill").disabled = running;

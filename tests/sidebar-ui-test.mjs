@@ -158,7 +158,7 @@ try {
   assert.equal(await evaluate("fixture.state.snapshot.sessions.some(session=>session.sessionId==='archived-session')"), true, "隐藏归档项目不删除数据");
   await evaluate("globalThis.fixtureHelp=document.querySelector('.dtw-help-trigger');fixtureHelp.focus()");
   assert.equal(await evaluate("document.querySelector('.dtw-help-tip').matches(':popover-open')"), true);
-  assert.match(await evaluate("document.querySelector('.dtw-help-tip').textContent"), /归类、记忆整理和压缩/);
+  assert.match(await evaluate("document.querySelector('.dtw-help-tip').textContent"), /记忆整理和压缩/);
   assert.match(await evaluate("document.querySelector('.dtw-help-tip').textContent"), /不参与.*记忆学习/);
   await evaluate("fixtureHelp.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));fixtureHelp.blur()");
   assert.equal(await evaluate("document.querySelector('.dtw-help-tip').matches(':popover-open')"), false);

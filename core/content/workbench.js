@@ -261,7 +261,7 @@
         automationHelpButton = document.createElement("button");
         automationHelpButton.type = "button"; automationHelpButton.className = "dtw-help-trigger";
         automationHelpButton.textContent = "i"; automationHelpButton.setAttribute("aria-label", "自动化会话详情");
-        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的会话。侧边栏展示最近 5 条，默认收起，可展开查看执行内容。这些会话不参与普通会话的自动归类和记忆学习。插件辅助会话保留最近 10 条，队列空闲时更早记录会从 DeepSeek 删除。手动收纳和来源不明的会话不会自动删除，不占用这 10 个名额；手动收纳可恢复为普通会话。");
+        DTWUI.setHelp(automationHelpButton, "收纳记忆整理和压缩使用的辅助会话，不参与记忆学习。显示最近 5 条，插件生成的仅保留最近 10 条；手动收纳不会自动删除。");
         document.getElementById(automationHelpButton.getAttribute("aria-describedby")).classList.add("dtw-help-tip", "dtw-owned");
       }
       helpSlot.append(automationHelpButton);
