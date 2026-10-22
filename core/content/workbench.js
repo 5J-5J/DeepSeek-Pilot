@@ -1116,7 +1116,6 @@
       let lastActivity = Date.now(); let previousText = ""; let historySignature = "";
       let lastHeartbeat = lastActivity; let lastHistoryCheck = 0; let lastHistoryError = "";
       let reportedAutomationId = state.automationSessionId;
-      let wasGenerating = false;
       while (true) {
         // Bind to the sent request's session, even if this tab changes routes or has no visible answer.
         state.automationSessionId ||= currentId();
@@ -1130,12 +1129,10 @@
         const nodes = onTargetPage ? messageNodes() : [];
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
         const generating = onTargetPage && isGenerating();
-        const generationEnded = onTargetPage && wasGenerating && !generating;
-        wasGenerating = generating;
         if (onTargetPage && (generating || text !== previousText)) lastActivity = Date.now();
         previousText = text;
-        // Confirm completion when generation stops; keep polling if the page signal is missing.
-        if (sessionId && (generationEnded || Date.now() - lastHistoryCheck >= 30000)) {
+        // Completion must not depend on detecting the page's stop control.
+        if (sessionId && Date.now() - lastHistoryCheck >= 5000) {
           let raw = "";
           try {
             const saved = state.lastHistory?.conversationId === sessionId ? state.lastHistory : null;

@@ -12,8 +12,7 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
   const started = 1000000;
   let clock = started;
   let submitted = false;
-  const requests = []; const polls = []; const sleeps = []; const generationEnds = [];
-  let previouslyGenerating = false;
+  const requests = []; const polls = []; const sleeps = [];
   const raw = '{"memories":[]}';
   const answer = {};
   class Clock extends Date { static now() { return clock; } }
@@ -22,12 +21,7 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
       : routeMode === "switched" && clock - started >= switchAt ? "other" : "helper",
     nodes: () => submitted && !hiddenAnswer ? [answer] : [],
     text: () => clock - started >= finishAt ? raw : changing ? `partial ${clock}` : "partial",
-    generating: () => {
-      const running = generating && clock - started < generatingUntil;
-      if (previouslyGenerating && !running) generationEnds.push(clock - started);
-      previouslyGenerating = running;
-      return running;
-    },
+    generating: () => generating && clock - started < generatingUntil,
     submit: () => { submitted = true; },
     sleep: async ms => { sleeps.push(ms); clock += ms; assert.ok(clock - started < 1800000, "任务应完成或报告停滞"); },
     applied: async () => ({ sessionId: appliedSessionId }),
@@ -75,8 +69,8 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
   assert.equal(context.fixture.state.automationJobId, null);
   assert.equal(context.fixture.state.automationSessionId, "");
   assert.ok(sleeps.every(ms => ms === 5000), "页面状态每 5 秒检查一次");
-  assert.ok(polls.slice(1).every((elapsed, index) => elapsed - polls[index] >= 30000 || generationEnds.includes(elapsed)),
-    "仅生成结束时可提前核对历史，其他请求保持 30 秒间隔");
+  assert.ok(polls.slice(1).every((elapsed, index) => elapsed - polls[index] === 5000),
+    "每 5 秒确认一次历史完成状态，不依赖生成按钮");
   assert.equal(requests.filter(request => request.type === "automation-result").length, 1);
   assert.ok(requests.every(request => request.automationSessionId === "helper"), "进度和结果均绑定同一自动化会话");
   return { ...requests.find(request => request.type === "automation-result"), polls };
@@ -85,17 +79,19 @@ async function run({ finishAt = Infinity, generating = false, hiddenAnswer = fal
 let result = await run({ finishAt: 31000, generating: true });
 assert.equal(result.raw, '{"memories":[]}');
 assert.equal(result.elapsed, 35000, "生成结束后在下一次 5 秒检查即提交，不再等到第 60 秒");
-assert.deepEqual(result.polls, [0, 30000, 35000]);
+assert.deepEqual(result.polls, [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000]);
 result = await run({ finishAt: 31000 });
-assert.equal(result.elapsed, 60000, "未识别生成状态时仍按 30 秒历史检查兜底");
-assert.deepEqual(result.polls, [0, 30000, 60000]);
+assert.equal(result.elapsed, 35000, "未识别生成按钮时也在完成后的下一次检查提交");
 result = await run({ finishAt: 41000, generating: true, generatingUntil: 31000 });
 assert.equal(result.raw, '{"memories":[]}');
-assert.equal(result.elapsed, 65000, "按钮消失时历史仍在生成，不能提前提交残缺回答");
-assert.deepEqual(result.polls, [0, 30000, 35000, 65000], "结束信号只额外触发一次历史检查");
+assert.equal(result.elapsed, 45000, "按钮消失后历史仍在生成时继续每 5 秒检查，不提交残缺回答或额外等待 30 秒");
+result = await run({ finishAt: 31000, generating: true, generatingUntil: Infinity });
+assert.equal(result.elapsed, 35000, "按钮误报生成中时仍以历史的 FINISHED 状态确认完成");
+result = await run({ finishAt: 31000, hiddenAnswer: true });
+assert.equal(result.elapsed, 35000, "缺少页面回答与生成按钮时也能及时确认历史完成");
 result = await run({ finishAt: 61000, generating: true, routeMode: "switched", switchAt: 35000 });
 assert.equal(result.raw, '{"memories":[]}');
-assert.deepEqual(result.polls, [0, 30000, 60000, 90000], "离开目标页面不应误触发生成结束检查");
+assert.equal(result.elapsed, 65000, "离开目标页面后仍及时检查原自动化会话的完成状态");
 result = await run({ finishAt: 12 * 60000, generating: true });
 assert.equal(result.raw, '{"memories":[]}');
 assert.ok(result.elapsed >= 12 * 60000, "持续生成超过旧的 6 分钟上限仍等待完成");
@@ -117,4 +113,4 @@ result = await run({ finishAt: 60000, appliedSessionId: "" });
 assert.equal(result.raw, '{"memories":[]}', "旧网络事件未提供 ID 时绑定首次出现的路由");
 result = await run({ historyError: "HTTP_ERROR" });
 assert.match(result.error, /自动化会话：helper.*历史读取失败：模拟历史请求失败/);
-console.log("Automation reply checks passed: prompt completion checks, unfinished-history protection, slow generation, missing DOM, low-frequency polling and stalls.");
+console.log("Automation reply checks passed: five-second history checks, missing/misleading generation controls, unfinished-history protection, route changes, slow replies and stalls.");
