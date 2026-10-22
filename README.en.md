@@ -65,6 +65,16 @@ cd deepseek-pilot
 
 No build step or separate model API key is required. Memory processing and other automation use auxiliary DeepSeek web conversations, require a working account and network, and generate site requests. The extension UI is currently in Chinese.
 
+### Load in Firefox
+
+1. Use **Firefox 128 or newer** and open `about:debugging#/runtime/this-firefox`.
+2. Choose **Load Temporary Add-on** and select **`firefox/manifest.json`**, rather than the Chrome manifest in `core/`.
+3. Open or refresh DeepSeek. If site access is not granted, allow the extension to access `chat.deepseek.com` in the extension menu.
+
+The complete `firefox/` directory is included; no build is required. Reload the temporary add-on after restarting Firefox. The fixed extension ID preserves its identity, but export important memories as a backup. Browser data is separate; use memory export/import to migrate. Permanent installation in standard Firefox requires a Mozilla-signed XPI, which this repository does not currently provide.
+
+After updating, click **Reload** on the debugging page and refresh DeepSeek. This version uses an event background and Firefox Promise APIs. Offline fixtures have been checked; real-account behavior has not been verified in Firefox.
+
 ### Update an existing installation
 
 For a Git installation, run `git pull --ff-only` in the repository. For ZIP installations, extract the updated source into the original location. Then reload **DeepSeek Pilot** in `chrome://extensions/` and refresh the DeepSeek page. Keep the loaded folder in place. Export important memories before updating; uninstalling the extension is not necessary.

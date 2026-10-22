@@ -65,6 +65,16 @@ cd deepseek-pilot
 
 运行扩展无需构建或配置单独的模型 API key。记忆整理等自动化通过 DeepSeek 网页辅助会话执行，需要可用账号与网络，并会产生站点请求。目前扩展界面为中文。
 
+### 在 Firefox 中加载
+
+1. 使用 **Firefox 128 或更新版本**，在地址栏打开 `about:debugging#/runtime/this-firefox`。
+2. 点击**临时载入附加组件**，选择仓库中 **`firefox/manifest.json`**（不要选 `core/manifest.json`）。
+3. 打开或刷新 DeepSeek 页面；如果扩展未获站点访问权限，在扩展菜单允许访问 `chat.deepseek.com`。
+
+`firefox/` 已包含完整文件，无需构建。临时扩展在浏览器重启后需要重新加载；固定扩展 ID 用于保持同一身份，但仍建议导出重要记忆备份。Chrome 和 Firefox 的本地数据分别保存，需要迁移时使用记忆导出、导入。普通正式版 Firefox 的长期安装需要 Mozilla 签名的 XPI，当前仓库未提供签名包。
+
+更新后，在上述调试页点击扩展的**重新载入**，再刷新 DeepSeek 页面。此版本使用事件后台与 Firefox Promise API；目前通过离线模拟验证，真实账号功能尚未在 Firefox 验证。
+
 ### 更新已安装的扩展
 
 Git 安装在仓库目录执行 `git pull --ff-only`；ZIP 安装将新源码解压到原安装位置。然后在 `chrome://extensions/` 找到 **DeepSeek Pilot**，点击重新加载，再刷新 DeepSeek 页面。不要删除已加载的目录；更新前可先导出重要记忆，不必卸载扩展。

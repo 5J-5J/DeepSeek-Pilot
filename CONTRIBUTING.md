@@ -43,3 +43,21 @@ Do not access real DeepSeek, call login endpoints or send real messages for test
 `docs/` 仅供本地使用，已从 Git 跟踪中移除并忽略。公开安装说明、功能目标和贡献步骤直接维护在根目录文档，展示素材放在 `assets/`。
 
 `docs/` is local-only and excluded from Git tracking. Keep public installation steps, feature goals and contribution instructions in root-level documents, and artwork in `assets/`.
+
+## Firefox 源码同步 / Firefox source sync
+
+`core/` 是共享源码；修改后执行 `node scripts/build-firefox.mjs`，同步生成并提交完整的 `firefox/` 目录。生成器转换后台加载顺序与 API 命名空间，不在生成目录手工维护业务逻辑。
+
+Keep shared logic in `core/`, then run `node scripts/build-firefox.mjs` and commit the updated `firefox/` copy. The generator adapts background loading and API namespaces.
+
+```sh
+node scripts/build-firefox.mjs
+node tests/firefox-test.mjs
+npx web-ext lint --source-dir firefox
+```
+
+PowerShell 中可执行 `$env:DTW_BROWSER="firefox"`，再运行使用 `runWorkbench` 的离线测试（如 `classification-disabled-test.mjs`、`session-memory-test.mjs`、`automation-cleanup-test.mjs` 和 `rollover-test.mjs`），测试完成后执行 `Remove-Item Env:DTW_BROWSER`。这些测试以 Promise API 模拟 Firefox 后台，不访问真实站点。
+
+已用 `web-ext run --source-dir firefox --args=-headless --start-url about:blank --no-input --no-reload` 在隔离 Firefox 配置中确认临时安装成功（必要时用 `--firefox` 指定浏览器路径），未访问 DeepSeek。`web-ext lint` 当前为 0 errors、5 warnings：1 条签名发布前需完善的数据收集声明，以及 4 条动态 `innerHTML` 检查提示。成功安装不代表真实账号端到端功能已验证。
+
+Temporary installation was verified with headless Firefox and an isolated profile on `about:blank`. Lint reports no errors and five warnings: one missing data-collection declaration to resolve before signing/publication, and four dynamic `innerHTML` notices. Real-account end-to-end behavior remains unverified.

@@ -1,6 +1,14 @@
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 export async function runWorkbench(context) {
+  if (process.env.DTW_BROWSER === "firefox") {
+    context.browser = context.chrome;
+    delete context.chrome;
+    // The fixture supplies DTWDB; Firefox loads the other scripts in manifest order.
+    for (const name of ["session-memory.js", "workbench.js"])
+      vm.runInContext(await readFile(new URL(`../firefox/background/${name}`, import.meta.url), "utf8"), context, { filename: name });
+    return;
+  }
   const [primary, incremental] = await Promise.all(["workbench.js", "session-memory.js"].map(name =>
     readFile(new URL(`../core/background/${name}`, import.meta.url), "utf8")));
   context.importScripts = (...paths) => {
