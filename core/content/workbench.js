@@ -933,7 +933,9 @@
     if (first) showToast(issue.message, 10000);
     let notice = root.querySelector(".dtw-request-notice");
     if (!notice) { notice = document.createElement("div"); notice.className = "dtw-request-notice dtw-owned"; notice.setAttribute("role", "alert"); root.append(notice); }
-    notice.innerHTML = `<span>${esc(issue.message)}</span><button data-action="open-options">设置</button>`;
+    const message = document.createElement("span"); message.textContent = issue.message;
+    const settings = document.createElement("button"); settings.dataset.action = "open-options"; settings.textContent = "设置";
+    notice.replaceChildren(message, settings);
     if (state.accountId) await refresh();
   }
   window.addEventListener("dtw:request-issue", (event) => { reportRequestIssue(parse(event)).catch(() => {}); });

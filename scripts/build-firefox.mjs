@@ -18,7 +18,9 @@ export async function firefoxContent(name) {
   if (name === "manifest.json") {
     const manifest = JSON.parse(text);
     manifest.background = { scripts: ["logic/db.js", "background/session-memory.js", "background/workbench.js"] };
-    manifest.browser_specific_settings = { gecko: { id: "deepseek-pilot@5j-5j.github.io", strict_min_version: "128.0" } };
+    manifest.browser_specific_settings = { gecko: { id: "deepseek-pilot@5j-5j.github.io", strict_min_version: "140.0",
+      data_collection_permissions: { required: ["personalCommunications", "websiteContent"] } },
+      gecko_android: { strict_min_version: "142.0" } };
     return JSON.stringify(manifest, null, 2) + "\n";
   }
   if (name.endsWith(".js")) {

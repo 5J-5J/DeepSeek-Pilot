@@ -261,7 +261,7 @@
         automationHelpButton = document.createElement("button");
         automationHelpButton.type = "button"; automationHelpButton.className = "dtw-help-trigger";
         automationHelpButton.textContent = "i"; automationHelpButton.setAttribute("aria-label", "自动化会话详情");
-        DTWUI.setHelp(automationHelpButton, "这里收纳插件用于会话归类、记忆整理和压缩的辅助会话，以及手动收纳的会话。侧边栏展示最近 5 条，默认收起，可展开查看执行内容。这些会话不参与普通会话的自动归类和记忆学习。插件辅助会话保留最近 10 条，队列空闲时更早记录会从 DeepSeek 删除。手动收纳和来源不明的会话不会自动删除，不占用这 10 个名额；手动收纳可恢复为普通会话。");
+        DTWUI.setHelp(automationHelpButton, "收纳记忆整理和压缩使用的辅助会话，不参与记忆学习。显示最近 5 条，插件生成的仅保留最近 10 条；手动收纳不会自动删除。");
         document.getElementById(automationHelpButton.getAttribute("aria-describedby")).classList.add("dtw-help-tip", "dtw-owned");
       }
       helpSlot.append(automationHelpButton);
@@ -933,7 +933,9 @@
     if (first) showToast(issue.message, 10000);
     let notice = root.querySelector(".dtw-request-notice");
     if (!notice) { notice = document.createElement("div"); notice.className = "dtw-request-notice dtw-owned"; notice.setAttribute("role", "alert"); root.append(notice); }
-    notice.innerHTML = `<span>${esc(issue.message)}</span><button data-action="open-options">设置</button>`;
+    const message = document.createElement("span"); message.textContent = issue.message;
+    const settings = document.createElement("button"); settings.dataset.action = "open-options"; settings.textContent = "设置";
+    notice.replaceChildren(message, settings);
     if (state.accountId) await refresh();
   }
   window.addEventListener("dtw:request-issue", (event) => { reportRequestIssue(parse(event)).catch(() => {}); });
@@ -1128,10 +1130,11 @@
         const onTargetPage = currentId() === sessionId;
         const nodes = onTargetPage ? messageNodes() : [];
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
-        if (onTargetPage && (isGenerating() || text !== previousText)) lastActivity = Date.now();
+        const generating = onTargetPage && isGenerating();
+        if (onTargetPage && (generating || text !== previousText)) lastActivity = Date.now();
         previousText = text;
-        // History completion survives missing/changed DOM selectors and background-tab throttling.
-        if (sessionId && Date.now() - lastHistoryCheck >= 30000) {
+        // Completion must not depend on detecting the page's stop control.
+        if (sessionId && Date.now() - lastHistoryCheck >= 5000) {
           let raw = "";
           try {
             const saved = state.lastHistory?.conversationId === sessionId ? state.lastHistory : null;
@@ -1272,7 +1275,7 @@
     const selected = sidebarSessions().find((item) => item.sessionId === id);
     const row = membership(id);
     if (selected?.purpose === "AUTOMATION") return menuItem("automation-unmark", id, "恢复为普通会话", "back");
-    return `${menuItem("open-picker", id, "移到项目", "move")}${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : ""}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
+    return `${row?.projectId ? menuItem("remove-from-project", id, "从项目中移除", "remove") : menuItem("open-picker", id, "移到项目", "move")}${selected?.purpose === "USER" && !row?.projectId && !row?.memoryModeEnabled ? menuItem("automation-mark", id, "收纳到自动化会话", "automation") : ""}`;
   }
   async function nativeSessionAction(id, action, title) {
     if (state.nativeActionRunning) return;

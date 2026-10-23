@@ -16,8 +16,12 @@ for (const name of await firefoxFiles()) {
 const manifest = JSON.parse(await readFile(new URL("../firefox/manifest.json", import.meta.url), "utf8"));
 assert.equal(manifest.background.service_worker, undefined);
 assert.deepEqual(manifest.background.scripts, ["logic/db.js", "background/session-memory.js", "background/workbench.js"]);
-assert.equal(manifest.browser_specific_settings.gecko.strict_min_version, "128.0");
+assert.equal(manifest.browser_specific_settings.gecko.strict_min_version, "140.0");
 assert.ok(manifest.browser_specific_settings.gecko.id);
+assert.equal(manifest.browser_specific_settings.gecko_android.strict_min_version, "142.0");
+assert.deepEqual(manifest.browser_specific_settings.gecko.data_collection_permissions, {
+  required: ["personalCommunications", "websiteContent"]
+});
 const paths = [...manifest.background.scripts, manifest.action.default_popup, manifest.options_page,
   ...manifest.content_scripts.flatMap(script => [...script.js, ...(script.css || [])]),
   ...manifest.web_accessible_resources.flatMap(entry => entry.resources)];

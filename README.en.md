@@ -67,9 +67,11 @@ No build step or separate model API key is required. Memory processing and other
 
 ### Load in Firefox
 
-1. Use **Firefox 128 or newer** and open `about:debugging#/runtime/this-firefox`.
+1. Use **Firefox 140 or newer** and open `about:debugging#/runtime/this-firefox`.
 2. Choose **Load Temporary Add-on** and select **`firefox/manifest.json`**, rather than the Chrome manifest in `core/`.
 3. Open or refresh DeepSeek. If site access is not granted, allow the extension to access `chat.deepseek.com` in the extension menu.
+
+Firefox requests consent to transmit personal communications and website content to DeepSeek for memory injection, distillation, and compression. Version 140 or newer is required for the built-in data consent prompt.
 
 The complete `firefox/` directory is included; no build is required. Reload the temporary add-on after restarting Firefox. The fixed extension ID preserves its identity, but export important memories as a backup. Browser data is separate; use memory export/import to migrate. Permanent installation in standard Firefox requires a Mozilla-signed XPI, which this repository does not currently provide.
 

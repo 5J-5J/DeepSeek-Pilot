@@ -67,9 +67,11 @@ cd deepseek-pilot
 
 ### 在 Firefox 中加载
 
-1. 使用 **Firefox 128 或更新版本**，在地址栏打开 `about:debugging#/runtime/this-firefox`。
+1. 使用 **Firefox 140 或更新版本**，在地址栏打开 `about:debugging#/runtime/this-firefox`。
 2. 点击**临时载入附加组件**，选择仓库中 **`firefox/manifest.json`**（不要选 `core/manifest.json`）。
 3. 打开或刷新 DeepSeek 页面；如果扩展未获站点访问权限，在扩展菜单允许访问 `chat.deepseek.com`。
+
+Firefox 安装时会要求同意传输聊天消息及网页内容，用于向 DeepSeek 带入、整理和压缩记忆；数据接收方为 DeepSeek。最低版本为 140，以使用浏览器内置的数据同意提示。
 
 `firefox/` 已包含完整文件，无需构建。临时扩展在浏览器重启后需要重新加载；固定扩展 ID 用于保持同一身份，但仍建议导出重要记忆备份。Chrome 和 Firefox 的本地数据分别保存，需要迁移时使用记忆导出、导入。普通正式版 Firefox 的长期安装需要 Mozilla 签名的 XPI，当前仓库未提供签名包。
 
