@@ -17,7 +17,7 @@
 <div class="setting-row"><label for="showProjectMemory">显示项目记忆</label><input id="showProjectMemory" class="switch" type="checkbox"></div>
 <div class="setting-row"><label for="showMessageTokens">显示消息 token 与时间</label><input id="showMessageTokens" class="switch" type="checkbox"></div>
 <div class="setting-row"><label for="showAutomationSessions">显示侧边栏自动化会话</label><input id="showAutomationSessions" class="switch" type="checkbox"></div></section>
-<section class="card settings-section"><header class="section-heading"><h2>自动化队列</h2><button type="button" class="help-trigger" aria-label="自动化队列详情" data-help="任务依次执行，一次运行一个。可暂停队列，或重试、取消未完成任务；暂停不影响正常聊天。">i</button></header>
+<section class="card settings-section"><header class="section-heading"><h2>自动化队列</h2><button type="button" class="help-trigger" aria-label="自动化队列详情" data-help="任务依次执行，记忆任务超过 30 秒会跳过并保留已有记忆。可暂停队列、重试或取消任务。">i</button></header>
 <div class="section-toolbar"><p id="queueSummary" role="status"></p><div class="actions"><button id="refreshQueue">刷新</button><button id="pauseQueue">暂停队列</button></div></div>
 <div id="automationQueue"></div><details class="history-details"><summary>最近完成或取消</summary><div id="queueHistory"></div></details></section>
 <section class="card settings-section"><header class="section-heading"><h2>需要核对的任务</h2><button type="button" class="help-trigger" aria-label="核对任务详情" data-help="结果不明时，先核对 DeepSeek 历史，再重试或忽略；原始草稿会保留。">i</button></header><div id="jobs"></div></section>

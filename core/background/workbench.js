@@ -21,6 +21,8 @@ const MEMORY_KINDS = { PERSONAL: ["资料", "偏好", "工作方式", "术语", 
 const QUEUED_JOB_TYPES = new Set(["CLASSIFY", "DISTILL", "COMPACT", "ROLLOVER"]);
 const AUTO_CLASSIFY_ENABLED = false;
 const MAX_PARALLEL_PLUGIN_SESSIONS = 1;
+const MEMORY_JOB_TIMEOUT_MS = 30000;
+const MEMORY_TIMEOUT_ALARM_PREFIX = "dtw-memory-timeout:";
 const migratedAutomationAccounts = new Set();
 const historyRequestSchedules = new Map();
 const LEGACY_SIDEBAR_KEY = "dtw.sidebar.v1";
@@ -655,6 +657,32 @@ async function enforcePersonalMemoryBudget(accountId) {
   return kept;
 }
 
+const memoryTimeoutAlarm = (job) => `${MEMORY_TIMEOUT_ALARM_PREFIX}${job.jobId}`;
+const isMemoryJob = (job) => ["DISTILL", "COMPACT"].includes(job?.type);
+async function armMemoryTimeout(job) {
+  if (!isMemoryJob(job) || job.status !== "RUNNING") return;
+  if (!Number.isFinite(job.startedAtMs)) {
+    job.startedAtMs = NOW(); await DB.put("jobs", job);
+  }
+  if (!await chrome.alarms.get?.(memoryTimeoutAlarm(job)))
+    await chrome.alarms.create(memoryTimeoutAlarm(job), { when: job.startedAtMs + MEMORY_JOB_TIMEOUT_MS });
+}
+async function expireMemoryJob(job) {
+  if (!isMemoryJob(job) || job.status !== "RUNNING" || !Number.isFinite(job.startedAtMs)
+    || NOW() - job.startedAtMs < MEMORY_JOB_TIMEOUT_MS) return false;
+  job.status = "NEEDS_REVIEW"; job.payload = null; job.cachedResult = null;
+  job.error = "记忆任务执行超过 30 秒，已跳过并保留已有记忆，可重试";
+  job.result = { reason: job.error }; job.updatedAtMs = NOW(); await DB.put("jobs", job);
+  await chrome.alarms.clear?.(memoryTimeoutAlarm(job));
+  if (Number.isInteger(job.tabId)) await chrome.tabs.remove(job.tabId).catch(() => {});
+  return true;
+}
+async function checkMemoryTimeout(accountId, jobId) {
+  const expired = await mutateMemories(accountId, async () =>
+    expireMemoryJob(await DB.get("jobs", key(accountId, jobId))));
+  if (expired) await drainJobQueue();
+}
+
 async function dispatchQueuedJob(job) {
   if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") return;
   try {
@@ -665,7 +693,8 @@ async function dispatchQueuedJob(job) {
       if (issue) throw Object.assign(new Error(issue.message), { code: issue.code });
       try {
         const result = await send(job.tabId, { type: job.type === "ROLLOVER" ? "dtw:rollover" : "dtw:automation",
-          accountId: job.accountId, jobId: job.jobId, prompt: job.payload });
+          accountId: job.accountId, jobId: job.jobId, prompt: job.payload,
+          deadlineAtMs: isMemoryJob(job) ? job.startedAtMs + MEMORY_JOB_TIMEOUT_MS : undefined });
         if (result?.ok) return;
         if (result?.code && result.code !== "NOT_READY") throw Object.assign(new Error(result.error || "插件请求已停止"), { code: result.code });
       } catch (error) { if (error.code) throw error; /* Content script may not have loaded yet. */ }
@@ -697,6 +726,7 @@ async function drainJobQueueNow() {
   const jobs = (await DB.all("jobs")).filter((job) => QUEUED_JOB_TYPES.has(job.type));
   const staleMemoryQueued = [];
   for (const job of jobs) {
+    await armMemoryTimeout(job);
     if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY" && ["QUEUED", "PENDING", "RUNNING"].includes(job.status)) {
       job.status = "CANCELLED";
       job.result = { ...job.result, ignored: "classification-disabled", reason: "会话自动归类已关闭" };
@@ -820,11 +850,18 @@ async function drainJobQueueNow() {
         }
       }
     }
-    job.status = "RUNNING"; job.updatedAtMs = NOW(); await DB.put("jobs", job);
+    job.status = "RUNNING"; job.updatedAtMs = NOW(); job.startedAtMs = NOW(); await DB.put("jobs", job);
     running += 1;
     let tab;
     try {
+      await armMemoryTimeout(job);
       tab = await chrome.tabs.create({ url: "https://chat.deepseek.com/", active: job.type === "ROLLOVER" });
+      const current = await DB.get("jobs", key(job.accountId, job.jobId));
+      if (current?.status !== "RUNNING" || await expireMemoryJob(current)) {
+        Object.assign(job, current || { status: "CANCELLED" });
+        await chrome.tabs.remove(tab.id).catch(() => {});
+        running -= 1; continue;
+      }
       job.tabId = tab.id; job.updatedAtMs = NOW(); await DB.put("jobs", job);
       dispatchQueuedJob(job).catch((error) => console.warn("队列任务发送失败", error));
     } catch (error) {
@@ -992,6 +1029,9 @@ async function automationResult(accountId, message, sender) {
   const job = await DB.get("jobs", key(accountId, message.jobId));
   if (!job || !["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type) || job.status !== "RUNNING"
     || job.tabId !== sender.tab?.id) throw new Error("作业来源或状态无效");
+  if (await expireMemoryJob(job)) {
+    await drainJobQueue(); return { ok: true, status: job.status };
+  }
   if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") {
     await drainJobQueue();
     return { ok: true, ignored: true };
@@ -1035,6 +1075,7 @@ async function automationResult(accountId, message, sender) {
     if (staleMemoryResult) { job.cachedResult = null; job.result = { ignored: "stale-memory-input" }; }
   }
   job.payload = null; job.updatedAtMs = NOW(); await DB.put("jobs", job);
+  if (isMemoryJob(job)) await chrome.alarms.clear?.(memoryTimeoutAlarm(job));
   // Closing a helper tab does not delete its DeepSeek conversation from history.
   if (Number.isInteger(job.tabId)) await chrome.tabs.remove(job.tabId).catch(() => {});
   await drainJobQueue();
@@ -1049,6 +1090,9 @@ async function automationProgress(accountId, message, sender) {
   const job = await DB.get("jobs", key(accountId, clean(message.jobId, 100)));
   if (!job || !["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type) || job.status !== "RUNNING"
     || job.tabId !== sender.tab?.id) throw new Error("作业来源或状态无效");
+  if (await expireMemoryJob(job)) {
+    await drainJobQueue(); return { ok: true, status: job.status };
+  }
   if (message.automationSessionId && message.automationSessionId !== job.automationSessionId)
     await recordAutomationSession(accountId, job, message.automationSessionId);
   job.phase = clean(message.phase, 40);
@@ -1521,8 +1565,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name.startsWith(MEMORY_TIMEOUT_ALARM_PREFIX)) {
+    const job = (await DB.all("jobs")).find((entry) => memoryTimeoutAlarm(entry) === alarm.name);
+    if (job?.status === "RUNNING") await checkMemoryTimeout(job.accountId, job.jobId);
+    return;
+  }
   if (alarm.name !== "dtw-job-check") return;
   for (const job of await DB.all("jobs")) {
+    if (isMemoryJob(job) && job.status === "RUNNING") {
+      await checkMemoryTimeout(job.accountId, job.jobId);
+      continue;
+    }
     if (!AUTO_CLASSIFY_ENABLED && job.type === "CLASSIFY") continue;
     const timeoutMs = ["CLASSIFY", "DISTILL", "COMPACT"].includes(job.type) ? 10 * 60000 : 5 * 60000;
     if (!["PENDING", "RUNNING"].includes(job.status) || NOW() - job.updatedAtMs < timeoutMs) continue;

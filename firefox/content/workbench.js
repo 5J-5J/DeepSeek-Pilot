@@ -1127,6 +1127,8 @@
           reportedAutomationId = sessionId;
         }
         requireSendAllowed();
+        if (Number.isFinite(message.deadlineAtMs) && Date.now() >= message.deadlineAtMs)
+          throw new Error("记忆任务执行超过 30 秒，已跳过并保留已有记忆，可重试");
         const onTargetPage = currentId() === sessionId;
         const nodes = onTargetPage ? messageNodes() : [];
         const text = nodes.length > initial && messageRole(nodes.at(-1)) === "ASSISTANT" ? nodeText(nodes.at(-1)) : "";
