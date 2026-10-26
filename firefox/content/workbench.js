@@ -641,6 +641,8 @@
     const normalize = (text) => text.replace(/\s+/g, "");
     if (record?.role === "USER") {
       const expected = normalize(question(DTWHistory.fragmentText(record)));
+      // Attachment-only requests have no body; file-card labels are not request text.
+      if (!expected) return "";
       const matched = candidates.find((text) => normalize(question(text)) === expected);
       if (matched !== undefined) return matched;
     }

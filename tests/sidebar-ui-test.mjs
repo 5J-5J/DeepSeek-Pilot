@@ -395,13 +395,28 @@ try {
     open.click();const preserved=user.firstChild===file&&file.textContent==='报告.pdf 25 KB打开文件'&&nextFile.textContent==='数据.csv 12 KB'&&clicks===1;
     nextBody.textContent='另一个分支的问题';fixture.renderMessageInfo();
     const branchProtected=host.querySelectorAll('.dtw-message-meta').length===2;
+    nextBody.textContent='继续分析';
+    const onlyFile=add('user','');const card=document.createElement('div');card.textContent='附件.pdf 42 KB';onlyFile.append(card);
+    add('assistant','附件已收到');add('user','请继续总结');add('assistant','后续总结');
+    records.push(...[['USER',''],['ASSISTANT','附件已收到'],['USER','请继续总结'],['ASSISTANT','后续总结']]
+      .map(([role,content],i)=>({messageId:i+5,parentId:i+4,role,status:'FINISHED',insertedAtMs:100004+i,
+        accumulatedTokenUsage:100*(i+5),fragments:[{type:role==='USER'?'REQUEST':'RESPONSE',content}]})));
+    fixture.state.lastHistory.currentMessageId=8;
+    const attachmentOnlyAligned=fixture.renderMessageInfo();
+    const afterFileLabels=[...host.querySelectorAll('.dtw-message-meta')].map(n=>n.textContent);
+    const fileOnlyPreserved=onlyFile.firstChild===card&&card.textContent==='附件.pdf 42 KB';
     host.remove();fixture.state.lastHistory=null;
-    return {hiddenWithoutHistory,aligned,labels,toggled,restored,preserved,branchProtected,tokensHidden,tokensRestored};
+    return {hiddenWithoutHistory,aligned,labels,toggled,restored,preserved,branchProtected,tokensHidden,tokensRestored,
+      attachmentOnlyAligned,afterFileLabels,fileOnlyPreserved};
   })()`);
   for (const key of ['hiddenWithoutHistory','aligned','toggled','restored','preserved','branchProtected','tokensHidden','tokensRestored'])
     assert.equal(attachments[key],true,'附件消息显示：'+key);
   assert.equal(attachments.labels.length,4,'附件不能导致本条和后续消息的时间/token消失');
   assert.match(attachments.labels[3],/本次 100 tokens.*累计 400 tokens/);
+  assert.equal(attachments.attachmentOnlyAligned,true,'仅有附件时整条分支仍保持对齐');
+  assert.equal(attachments.fileOnlyPreserved,true,'纯附件消息保留文件卡片');
+  assert.equal(attachments.afterFileLabels.length,8,'纯附件消息之后的回答和后续对话仍显示 token');
+  assert.match(attachments.afterFileLabels[7],/本次 100 tokens.*累计 800 tokens/);
   // Exercise the production entry point as well as the isolated rendering helpers above.
   for (const failure of ["queue", "snapshot-error", "snapshot-timeout"]) {
     await page.call("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/a/chat?startup=${failure}` });
